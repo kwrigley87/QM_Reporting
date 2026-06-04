@@ -14,13 +14,13 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 // Create one Authorization Code + PKCE client per Genesys Cloud region you intend to use.
 const OAUTH_CLIENTS = {
   'usw2.pure.cloud': {
-    clientId: 'REPLACE_WITH_USW2_AUTH_CODE_PKCE_CLIENT_ID',
+    clientId: 'f511f157-d30f-4130-b81c-7ac4e780f1ba',
     redirectUri: 'https://kwrigley87.github.io/QM_Reporting/'
   },
   // Local development only. Add http://localhost:5173/ to the same OAuth client redirect URIs
   // or use a separate local-test OAuth client.
   'localhost': {
-    clientId: 'REPLACE_WITH_LOCAL_TEST_AUTH_CODE_PKCE_CLIENT_ID',
+    clientId: 'f511f157-d30f-4130-b81c-7ac4e780f1ba',
     redirectUri: 'http://localhost:5173/'
   }
 };
