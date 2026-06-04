@@ -11,7 +11,7 @@ const DETAIL_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_REGION = 'usw2.pure.cloud';
 const OAUTH_CLIENTS = {
   'usw2.pure.cloud': {
-    clientId: 'REPLACE_WITH_USW2_AUTH_CODE_PKCE_CLIENT_ID',
+    clientId: '525dc009-269e-4625-9a3a-9bf5d31a76f1',
     redirectUri: 'https://kwrigley87.github.io/QM_Reporting/'
   }
   // Add more regions here when you create matching PKCE OAuth clients.
