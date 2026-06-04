@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Genesys QM Insights</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Genesys QM Insights</h1>
+      <p>Live question-level QM dashboard. Data is fetched on request and cached only in this browser.</p>
+    </div>
+    <div class="auth-actions">
+      <span id="authStatus" class="pill warn">Not signed in</span>
+      <div class="signin-wrap">
+        <button id="loginBtn">Sign in</button>
+        <div id="regionPopover" class="popover hidden">
+          <label>Genesys Cloud region
+            <select id="loginRegion">
+              <option value="mypurecloud.com">US East (mypurecloud.com)</option>
+              <option value="usw2.pure.cloud">US West (usw2.pure.cloud)</option>
+              <option value="cac1.pure.cloud">Canada (cac1.pure.cloud)</option>
+              <option value="mypurecloud.ie">EU Ireland (mypurecloud.ie)</option>
+              <option value="mypurecloud.de">EU Frankfurt (mypurecloud.de)</option>
+              <option value="euw2.pure.cloud">EU London (euw2.pure.cloud)</option>
+              <option value="aps1.pure.cloud">Asia Pacific Mumbai (aps1.pure.cloud)</option>
+              <option value="mypurecloud.com.au">Asia Pacific Sydney (mypurecloud.com.au)</option>
+              <option value="apne2.pure.cloud">Asia Pacific Seoul (apne2.pure.cloud)</option>
+              <option value="mypurecloud.jp">Asia Pacific Tokyo (mypurecloud.jp)</option>
+              <option value="sae1.pure.cloud">South America Sao Paulo (sae1.pure.cloud)</option>
+            </select>
+          </label>
+          <button id="continueLoginBtn">Continue</button>
+          <p class="note">The selected region determines the OAuth client and API host.</p>
+        </div>
+      </div>
+      <button id="logoutBtn" class="secondary">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Filters</h2>
+      <div class="grid">
+        <label>Start date
+          <input id="startDate" type="date" />
+        </label>
+        <label>End date
+          <input id="endDate" type="date" />
+        </label>
+        <label>Evaluation source
+          <select id="sourceFilter">
+            <option value="both">Both human and auto-submitted</option>
+            <option value="human">Human only</option>
+            <option value="auto">Auto-submitted only</option>
+          </select>
+        </label>
+        <label>Calibration records
+          <select id="recordFilter">
+            <option value="evaluation">Evaluations only</option>
+            <option value="calibration">Calibrations only</option>
+            <option value="both">Evaluations and calibrations</option>
+          </select>
+        </label>
+        <label>Forms
+          <select id="formFilter" multiple size="5"></select>
+        </label>
+        <label>Agents
+          <select id="agentFilter" multiple size="5"></select>
+        </label>
+        <label>Divisions
+          <select id="divisionFilter" multiple size="5"></select>
+        </label>
+        <label>Work teams
+          <select id="teamFilter" multiple size="5"></select>
+        </label>
+      </div>
+      <div class="row actions">
+        <button id="runBtn">Run dashboard</button>
+        <button id="exportBtn" class="secondary">Export question CSV</button>
+        <button id="refreshMetadataBtn" class="secondary">Refresh filter lists</button>
+        <button id="clearCacheBtn" class="secondary">Clear browser cache</button>
+        <label class="inline-check"><input id="autoRefresh" type="checkbox" checked /> Auto refresh on filter change</label>
+      </div>
+      <p class="note">Use Ctrl/Cmd-click to multi-select filter values. Clear a multi-select by deselecting all values.</p>
+    </section>
+
+    <section class="metrics metrics-6">
+      <div class="metric"><span id="metricEvals">0</span><label>Evaluations</label></div>
+      <div class="metric"><span id="metricAvg">-</span><label>Total score avg</label></div>
+      <div class="metric"><span id="metricCriticalAvg">-</span><label>Total critical score avg</label></div>
+      <div class="metric"><span id="metricAiAvg">-</span><label>AI evaluation score avg</label></div>
+      <div class="metric"><span id="metricCritical">0</span><label>Critical failure evaluations</label></div>
+      <div class="metric"><span id="metricQuestionFailures">0</span><label>Failed critical questions</label></div>
+    </section>
+
+    <section class="card">
+      <h2>Trend over period</h2>
+      <div id="trendTable" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Forms average scores</h2>
+      <div id="formSummary" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Group average scores</h2>
+      <div id="groupSummary" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Underperforming questions</h2>
+      <div id="questionSummary" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Agent / work team performance</h2>
+      <div id="agentTeamSummary" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Answer distribution</h2>
+      <div id="answerSummary" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Status</h2>
+      <div id="status" class="status">Ready.</div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
