@@ -158,6 +158,9 @@ function toggleRegionPopover(show = null) {
   pop.classList.toggle('hidden', !shouldShow);
 }
 async function startLogin() {
+  sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
+  $('regionHelp').textContent = 'Only regions with a configured OAuth client ID can sign in.';
   toggleRegionPopover(true);
 }
 async function continueLogin() {
@@ -178,7 +181,9 @@ async function continueLogin() {
   const codeChallenge = await sha256Base64Url(codeVerifier);
   const oauthState = randomString(16);
   const redirectUri = oauth.redirectUri || `${window.location.origin}${window.location.pathname}`;
-  sessionStorage.setItem(PKCE_KEY, JSON.stringify({ codeVerifier, oauthState, cfg, clientId: oauth.clientId, redirectUri }));
+  const pkcePayload = JSON.stringify({ codeVerifier, oauthState, cfg, clientId: oauth.clientId, redirectUri });
+  sessionStorage.setItem(PKCE_KEY, pkcePayload);
+  localStorage.setItem(PKCE_KEY, pkcePayload);
   const authUrl = new URL(`https://${loginHost(region)}/oauth/authorize`);
   authUrl.searchParams.set('client_id', oauth.clientId);
   authUrl.searchParams.set('response_type', 'code');
@@ -189,10 +194,14 @@ async function continueLogin() {
   window.location.assign(authUrl.toString());
 }
 async function handleAuthCallback() {
-  const params = new URLSearchParams(window.location.search);
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const params = searchParams.get('code') ? searchParams : hashParams;
+  const error = params.get('error');
+  if (error) throw new Error(`OAuth failed: ${error} ${params.get('error_description') || ''}`.trim());
   const code = params.get('code');
   if (!code) return;
-  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || '{}');
+  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || localStorage.getItem(PKCE_KEY) || '{}');
   if (!saved.codeVerifier || params.get('state') !== saved.oauthState) {
     throw new Error('OAuth state validation failed. Try signing in again.');
   }
@@ -212,9 +221,10 @@ async function handleAuthCallback() {
   token.expires_at = Date.now() + ((token.expires_in || 3600) * 1000) - 60000;
   localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, region: saved.cfg.region }));
   sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
   state.region = saved.cfg.region;
   $('loginRegion').value = state.region;
-  window.history.replaceState({}, document.title, saved.redirectUri);
+  window.history.replaceState({}, document.title, new URL(saved.redirectUri).pathname || '/');
   state.token = token;
   updateAuthUi();
 }
@@ -231,6 +241,8 @@ function loadToken() {
 }
 function logout() {
   localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
   state.token = null;
   state.rows = [];
   state.evaluations = [];
