@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.4.1';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -23,15 +23,26 @@ let state = {
   rows: [],
   evaluations: [],
   evaluationSummaries: [],
+  aggregateSearchResults: null,
+  detailLoaded: false,
+  charts: {},
   cache: loadCache(),
   runTimer: null,
   metadataLoaded: false,
 };
 
 const $ = (id) => document.getElementById(id);
-const selectedValues = (id) => Array.from($(id).selectedOptions || []).map((o) => o.value).filter(Boolean);
+function selectedValues(id) {
+  const el = $(id);
+  if (!el) return [];
+  if (el.tagName === 'SELECT') return Array.from(el.selectedOptions || []).map((o) => o.value).filter(Boolean);
+  return Array.from(el.querySelectorAll('input[type=checkbox]:checked')).map((o) => o.value).filter(Boolean);
+}
 
 function setStatus(message) { $('status').textContent = message; }
+function setBusy(isBusy) {
+  ['exportBtn', 'resetFiltersBtn'].forEach((id) => { if ($(id)) $(id).disabled = isBusy; });
+}
 function today(offsetDays = 0) {
   const d = new Date(); d.setDate(d.getDate() + offsetDays);
   return d.toISOString().slice(0, 10);
@@ -68,11 +79,12 @@ function loadCache() {
       forms: cache.forms || {},
       divisions: cache.divisions || {},
       teams: cache.teams || {},
+      queues: cache.queues || {},
       evaluations: cache.evaluations || {},
       savedAt: cache.savedAt || Date.now(),
     };
   } catch {
-    return { users: {}, forms: {}, divisions: {}, teams: {}, evaluations: {}, savedAt: Date.now() };
+    return { users: {}, forms: {}, divisions: {}, teams: {}, queues: {}, evaluations: {}, savedAt: Date.now() };
   }
 }
 function saveCache() {
@@ -83,11 +95,18 @@ function clearCache() {
   localStorage.removeItem(CACHE_KEY);
   state.cache = loadCache();
   state.metadataLoaded = false;
-  clearSelect('agentFilter', 'Sign in, then refresh filter lists');
-  clearSelect('formFilter', 'Forms will populate after refresh or first dashboard run');
-  clearSelect('divisionFilter', 'Sign in, then refresh filter lists');
-  clearSelect('teamFilter', 'Sign in, then refresh filter lists');
-  setStatus('Browser cache cleared. Click Refresh filter lists or Run dashboard to retrieve fresh users, forms, divisions, and teams.');
+  populateFilterOptions(getConfigFromUi());
+  updateActiveFilterChips();
+  setStatus('Browser metadata cache cleared. Filter selections were kept; use Refresh lists to retrieve users, forms, queues, divisions, and teams again.');
+}
+function resetFilters() {
+  $('startDate').value = today(-7);
+  $('endDate').value = today(0);
+  $('sourceFilter').value = 'both';
+  $('recordFilter').value = 'evaluation';
+  ['formFilter', 'agentFilter', 'queueFilter', 'divisionFilter', 'teamFilter'].forEach(clearMultiFilterSelection);
+  updateActiveFilterChips();
+  debouncedRun();
 }
 function getConfigFromUi() {
   return {
@@ -100,7 +119,7 @@ function getConfigFromUi() {
     agentIds: selectedValues('agentFilter'),
     divisionIds: selectedValues('divisionFilter'),
     teamIds: selectedValues('teamFilter'),
-    autoRefresh: $('autoRefresh').checked,
+    queueIds: selectedValues('queueFilter'),
   };
 }
 function hydrateUi() {
@@ -111,11 +130,12 @@ function hydrateUi() {
   $('endDate').value = cfg.endDate || today(0);
   $('sourceFilter').value = cfg.sourceFilter || 'both';
   $('recordFilter').value = cfg.recordFilter || 'evaluation';
-  $('autoRefresh').checked = cfg.autoRefresh !== false;
   clearSelect('agentFilter', 'Sign in, then refresh filter lists');
   clearSelect('formFilter', 'Forms will populate after refresh or first dashboard run');
   clearSelect('divisionFilter', 'Sign in, then refresh filter lists');
   clearSelect('teamFilter', 'Sign in, then refresh filter lists');
+  clearSelect('queueFilter', 'Sign in, then refresh filter lists');
+  updateActiveFilterChips();
 }
 function apiHost(region = state.region) { return `api.${region}`; }
 function loginHost(region = state.region) { return `login.${region}`; }
@@ -142,12 +162,22 @@ function toggleRegionPopover(show = null) {
   pop.classList.toggle('hidden', !shouldShow);
 }
 async function startLogin() {
+  sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
+  $('regionHelp').textContent = 'Only regions with a configured OAuth client ID can sign in.';
   toggleRegionPopover(true);
 }
 async function continueLogin() {
   const cfg = getConfigFromUi();
   const region = $('loginRegion').value;
-  const oauth = oauthForRegion(region);
+  let oauth;
+  try {
+    oauth = oauthForRegion(region);
+  } catch (e) {
+    $('regionHelp').textContent = e.message;
+    alert(e.message);
+    return;
+  }
   cfg.region = region;
   state.region = region;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
@@ -155,7 +185,9 @@ async function continueLogin() {
   const codeChallenge = await sha256Base64Url(codeVerifier);
   const oauthState = randomString(16);
   const redirectUri = oauth.redirectUri || `${window.location.origin}${window.location.pathname}`;
-  sessionStorage.setItem(PKCE_KEY, JSON.stringify({ codeVerifier, oauthState, cfg, clientId: oauth.clientId, redirectUri }));
+  const pkcePayload = JSON.stringify({ codeVerifier, oauthState, cfg, clientId: oauth.clientId, redirectUri });
+  sessionStorage.setItem(PKCE_KEY, pkcePayload);
+  localStorage.setItem(PKCE_KEY, pkcePayload);
   const authUrl = new URL(`https://${loginHost(region)}/oauth/authorize`);
   authUrl.searchParams.set('client_id', oauth.clientId);
   authUrl.searchParams.set('response_type', 'code');
@@ -166,10 +198,14 @@ async function continueLogin() {
   window.location.assign(authUrl.toString());
 }
 async function handleAuthCallback() {
-  const params = new URLSearchParams(window.location.search);
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const params = searchParams.get('code') ? searchParams : hashParams;
+  const error = params.get('error');
+  if (error) throw new Error(`OAuth failed: ${error} ${params.get('error_description') || ''}`.trim());
   const code = params.get('code');
   if (!code) return;
-  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || '{}');
+  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || localStorage.getItem(PKCE_KEY) || '{}');
   if (!saved.codeVerifier || params.get('state') !== saved.oauthState) {
     throw new Error('OAuth state validation failed. Try signing in again.');
   }
@@ -189,9 +225,10 @@ async function handleAuthCallback() {
   token.expires_at = Date.now() + ((token.expires_in || 3600) * 1000) - 60000;
   localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, region: saved.cfg.region }));
   sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
   state.region = saved.cfg.region;
   $('loginRegion').value = state.region;
-  window.history.replaceState({}, document.title, saved.redirectUri);
+  window.history.replaceState({}, document.title, new URL(saved.redirectUri).pathname || '/');
   state.token = token;
   updateAuthUi();
 }
@@ -208,19 +245,29 @@ function loadToken() {
 }
 function logout() {
   localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
   state.token = null;
   state.rows = [];
   state.evaluations = [];
+  state.evaluationSummaries = [];
+  state.detailLoaded = false;
+  render();
+  setStatus('Signed out. Choose Sign in to reconnect to Genesys Cloud.');
   updateAuthUi();
 }
 function updateAuthUi() {
-  if (state.token?.access_token) {
+  const signedIn = !!state.token?.access_token;
+  if (signedIn) {
     $('authStatus').textContent = `Signed in - ${state.region}`;
     $('authStatus').className = 'pill ok';
   } else {
     $('authStatus').textContent = 'Not signed in';
     $('authStatus').className = 'pill warn';
   }
+  $('loginBtn').classList.toggle('hidden', signedIn);
+  $('logoutBtn').classList.toggle('hidden', !signedIn);
+  toggleRegionPopover(false);
 }
 async function gcFetch(method, path, payload = null, retries = 4) {
   if (!state.token?.access_token) throw new Error('Not signed in.');
@@ -257,11 +304,73 @@ async function fetchAllPages(path, key = 'entities', pageSize = 100) {
   return all;
 }
 function setOptions(id, items, selected = []) {
+  const el = $(id);
   const selectedSet = new Set(selected);
-  $(id).innerHTML = items.map((x) => `<option value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' selected' : ''}>${htmlEscape(x.name || x.email || x.id)}</option>`).join('');
+  const placeholder = el.dataset.placeholder || 'Select values';
+  if (el.tagName === 'SELECT') {
+    el.innerHTML = items.map((x) => `<option value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' selected' : ''}>${htmlEscape(x.name || x.email || x.id)}</option>`).join('');
+    return;
+  }
+  const selectedCount = items.filter((x) => selectedSet.has(x.id)).length;
+  const summary = selectedCount ? `${selectedCount} selected` : placeholder;
+  el.innerHTML = `<button type="button" class="multi-filter-button" aria-expanded="false">${htmlEscape(summary)}</button>
+    <div class="multi-filter-menu hidden">
+      <label class="multi-filter-search">Search <input type="search" placeholder="Filter options" /></label>
+      <div class="multi-filter-options">${items.length ? items.map((x) => {
+        const label = x.name || x.email || x.id;
+        return `<label class="check-row"><input type="checkbox" value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' checked' : ''} /> <span>${htmlEscape(label)}</span></label>`;
+      }).join('') : `<p class="note">${htmlEscape(placeholder)}</p>`}</div>
+      <button type="button" class="link-button clear-filter-button">Clear selected</button>
+    </div>`;
+  wireMultiFilter(id);
+}
+function wireMultiFilter(id) {
+  const el = $(id);
+  const button = el.querySelector('.multi-filter-button');
+  const menu = el.querySelector('.multi-filter-menu');
+  const search = el.querySelector('input[type=search]');
+  button?.addEventListener('click', () => {
+    document.querySelectorAll('.multi-filter-menu').forEach((m) => { if (m !== menu) m.classList.add('hidden'); });
+    const open = menu.classList.toggle('hidden') === false;
+    button.setAttribute('aria-expanded', String(open));
+    if (open) search?.focus();
+  });
+  el.querySelectorAll('input[type=checkbox]').forEach((checkbox) => checkbox.addEventListener('change', () => {
+    updateMultiFilterSummary(id);
+    updateActiveFilterChips();
+    debouncedRun();
+  }));
+  search?.addEventListener('input', () => {
+    const term = search.value.toLowerCase();
+    el.querySelectorAll('.check-row').forEach((row) => row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(term)));
+  });
+  el.querySelector('.clear-filter-button')?.addEventListener('click', () => {
+    clearMultiFilterSelection(id);
+    updateActiveFilterChips();
+    debouncedRun();
+  });
+}
+function closeMultiFiltersOnOutsideClick(event) {
+  if (event.target.closest('.multi-filter')) return;
+  document.querySelectorAll('.multi-filter-menu').forEach((menu) => menu.classList.add('hidden'));
+  document.querySelectorAll('.multi-filter-button').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+}
+function updateMultiFilterSummary(id) {
+  const el = $(id);
+  const button = el.querySelector('.multi-filter-button');
+  if (!button) return;
+  const count = selectedValues(id).length;
+  button.textContent = count ? `${count} selected` : (el.dataset.placeholder || 'Select values');
+}
+function clearMultiFilterSelection(id) {
+  const el = $(id);
+  el.querySelectorAll('input[type=checkbox]').forEach((checkbox) => { checkbox.checked = false; });
+  updateMultiFilterSummary(id);
 }
 function clearSelect(id, placeholder) {
-  $(id).innerHTML = `<option value="" disabled>${htmlEscape(placeholder)}</option>`;
+  const el = $(id);
+  if (el) el.dataset.placeholder = placeholder;
+  setOptions(id, [], []);
 }
 async function refreshMetadata(force = false) {
   if (!state.token?.access_token) return;
@@ -284,6 +393,10 @@ async function refreshMetadata(force = false) {
       state.cache.teamList = teams.map((t) => ({ id: t.id, name: t.name || t.id }));
     } catch (e) { console.warn('Team list failed', e); }
     try {
+      const queues = await fetchAllPages('/api/v2/routing/queues', 'entities', 100);
+      state.cache.queueList = queues.map((q) => ({ id: q.id, name: q.name || q.id }));
+    } catch (e) { console.warn('Queue list failed', e); }
+    try {
       const forms = await fetchAllPages('/api/v2/quality/publishedforms/evaluations', 'entities', 100);
       state.cache.formList = forms.map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id }));
     } catch (e) { console.warn('Published form list failed; forms will populate from evaluations', e); }
@@ -298,6 +411,7 @@ function populateFilterOptions(cfg = loadConfig()) {
   setOptions('agentFilter', (state.cache.userList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.agentIds || []);
   setOptions('divisionFilter', (state.cache.divisionList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.divisionIds || []);
   setOptions('teamFilter', (state.cache.teamList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.teamIds || []);
+  setOptions('queueFilter', (state.cache.queueList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.queueIds || []);
   const fromDetails = Object.values(state.cache.forms || {}).map((x) => x.data).filter(Boolean).map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id }));
   const forms = [...(state.cache.formList || []), ...fromDetails];
   const uniqueForms = [...new Map(forms.map((f) => [f.id, f])).values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -334,6 +448,7 @@ function buildAggregateQuery(startDate, endDate, recordType, sourceFilter, cfg) 
   if (sourceFilter === 'auto') clauses.push({ type: 'or', predicates: [{ dimension: 'systemSubmitted', value: 'true' }] });
   if (cfg.agentIds?.length) clauses.push({ type: 'or', predicates: cfg.agentIds.map((value) => ({ dimension: 'agentId', value })) });
   if (cfg.formIds?.length) clauses.push({ type: 'or', predicates: cfg.formIds.map((value) => ({ dimension: 'evaluationFormId', value })) });
+  if (cfg.queueIds?.length) clauses.push({ type: 'or', predicates: cfg.queueIds.map((value) => ({ dimension: 'queueId', value })) });
   return {
     interval: `${startDate}T00:00:00.000Z/${endDate}T23:59:59.999Z`,
     granularity: 'P1D',
@@ -501,6 +616,7 @@ function passesClientFilters(evaluation, rows, cfg) {
   const first = rows[0] || {};
   if (cfg.teamIds?.length && !cfg.teamIds.includes(evaluation.agentTeam?.id || '')) return false;
   if (cfg.divisionIds?.length && !cfg.divisionIds.includes(first.agent_division_id || '')) return false;
+  if (cfg.queueIds?.length && !cfg.queueIds.includes(evaluation.queue?.id || first.queue_id || '')) return false;
   return true;
 }
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -523,6 +639,101 @@ async function fetchEvaluationDetail(conversationId, evaluationId) {
   state.cache.evaluations[key] = { data: evaluation, cachedAt: Date.now() };
   return evaluation;
 }
+
+function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 100) {
+  const query = [
+    { type: 'DATE_RANGE', field: 'submittedDate', startValue: `${cfg.startDate}T00:00:00.000Z`, endValue: `${cfg.endDate}T23:59:59.999Z`, operator: 'AND' },
+  ];
+  const addTerms = (field, values) => {
+    if (values?.length) query.push({ type: 'TERMS', field, values, operator: 'AND' });
+  };
+  addTerms('formId', cfg.formIds);
+  addTerms('agentId', cfg.agentIds);
+  addTerms('queueId', cfg.queueIds);
+  addTerms('divisionId', cfg.divisionIds);
+  addTerms('teamId', cfg.teamIds);
+  if (cfg.sourceFilter === 'human') query.push({ type: 'EXACT', field: 'systemSubmitted', value: false, operator: 'AND' });
+  if (cfg.sourceFilter === 'auto') query.push({ type: 'EXACT', field: 'systemSubmitted', value: true, operator: 'AND' });
+  query.push({ type: recordType === 'calibration' ? 'EXISTS' : 'NOT_EXISTS', field: 'calibrationId', operator: 'AND' });
+  return {
+    pageNumber,
+    pageSize,
+    query,
+    sort: [{ field: 'submittedDate', order: 'desc' }],
+    aggregations: [
+      { name: 'avgTotalScore', field: 'totalScore', type: 'AVERAGE' },
+      { name: 'avgCriticalScore', field: 'totalCriticalScore', type: 'AVERAGE' },
+      { name: 'totalScoreStats', field: 'totalScore', type: 'STATS' },
+      { name: 'byForm', field: 'formId', type: 'TERMS' },
+      { name: 'byQuestionGroup', field: 'questionGroupId', type: 'TERMS' },
+      { name: 'byQuestion', field: 'questionId', type: 'TERMS' },
+      { name: 'byAnswer', field: 'answerId', type: 'TERMS' },
+    ],
+  };
+}
+function unwrapSearchEntities(data) {
+  const roots = [data.results, data.entities, data.evaluations, data.items, data.documents, data.hits, data.searchResults].filter(Array.isArray);
+  const items = roots[0] || [];
+  return items.map((item) => item.document || item.entity || item.evaluation || item).filter(Boolean);
+}
+function normalizeSearchEvaluation(item, recordType) {
+  const form = item.evaluationForm || item.form || {};
+  const agent = item.agent || item.agentUser || {};
+  const queue = item.queue || {};
+  const team = item.agentTeam || item.team || {};
+  const division = item.division || agent.division || {};
+  const answers = item.answers || item.scoring || {};
+  const evaluationId = item.evaluationId || item.id;
+  if (!evaluationId) return null;
+  return {
+    evaluation_id: evaluationId,
+    export_record_type: recordType,
+    conversation_id: item.conversationId || item.conversation?.id || '',
+    form_id: item.formId || form.id || item.evaluationFormId || '',
+    form_name: item.formName || form.name || '',
+    agent_id: item.agentId || agent.id || '',
+    agent_name: item.agentName || agent.name || '',
+    queue_id: item.queueId || queue.id || '',
+    queue_name: item.queueName || queue.name || '',
+    team_id: item.teamId || team.id || '',
+    team_name: item.teamName || team.name || '',
+    division_id: item.divisionId || division.id || '',
+    division_name: item.divisionName || division.name || '',
+    submitted_date: item.submittedDate || item.releaseDate || item.changedDate || item.conversationDate || '',
+    total_score: item.totalScore ?? answers.totalScore ?? '',
+    total_critical_score: item.totalCriticalScore ?? answers.totalCriticalScore ?? '',
+    ai_score: item.systemSubmitted === true ? (item.totalScore ?? answers.totalScore ?? '') : '',
+    system_submitted: item.systemSubmitted === true,
+    critical_failure: item.anyFailedKillQuestions === true || answers.anyFailedKillQuestions === true || (n(item.totalCriticalScore ?? answers.totalCriticalScore) !== null && n(item.totalCriticalScore ?? answers.totalCriticalScore) < 100),
+    failed_critical_questions: item.failedCriticalQuestions ?? item.failedKillQuestions ?? 0,
+  };
+}
+async function fetchQualitySearchSummaries(recordType) {
+  const cfg = getConfigFromUi();
+  const first = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, 1, 100));
+  const pageCount = Math.min(first.pageCount || Math.ceil((first.total || 0) / 100) || 1, 50);
+  const entities = unwrapSearchEntities(first);
+  for (let page = 2; page <= pageCount; page++) {
+    const data = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, page, 100));
+    entities.push(...unwrapSearchEntities(data));
+  }
+  const summaries = entities.map((item) => normalizeSearchEvaluation(item, recordType)).filter(Boolean);
+  if (!summaries.length && !first.total && !first.aggregations) throw new Error('No dashboard records were returned for the selected filters.');
+  state.aggregateSearchResults = first;
+  return { rows: [], evals: [], summaries, search: first };
+}
+async function fetchRecordTypeDashboard(recordType) {
+  try {
+    setStatus(`Refreshing ${recordType} dashboard metrics...`);
+    const result = await fetchQualitySearchSummaries(recordType);
+    if (result.summaries.length) return result;
+  } catch (e) {
+    console.warn('Quality evaluations search unavailable; falling back to detail path.', e);
+  }
+  setStatus(`Refreshing ${recordType} dashboard metrics...`);
+  return fetchRecordType(recordType);
+}
+
 async function fetchRecordType(recordType) {
   const cfg = getConfigFromUi();
   const query = buildAggregateQuery(cfg.startDate, cfg.endDate, recordType, cfg.sourceFilter, cfg);
@@ -551,7 +762,7 @@ async function fetchRecordType(recordType) {
   return { rows, evals, summaries };
 }
 function debouncedRun() {
-  if (!$('autoRefresh').checked || !state.token?.access_token) return;
+  if (!state.token?.access_token) return;
   clearTimeout(state.runTimer);
   state.runTimer = setTimeout(() => runDashboard(), 700);
 }
@@ -560,47 +771,121 @@ async function runDashboard() {
   if (!state.token?.access_token) { alert('Sign in first.'); return; }
   if (!cfg.startDate || !cfg.endDate) { alert('Select a date range.'); return; }
   saveConfig();
-  $('runBtn').disabled = true;
+  setBusy(true);
   try {
     if (!state.metadataLoaded) await refreshMetadata(false);
     state.rows = [];
     state.evaluations = [];
     state.evaluationSummaries = [];
+    state.detailLoaded = false;
     const types = cfg.recordFilter === 'both' ? ['evaluation', 'calibration'] : [cfg.recordFilter];
     for (const t of types) {
-      setStatus(`Running ${t} query...`);
-      const result = await fetchRecordType(t);
+      const result = await fetchRecordTypeDashboard(t);
       state.rows.push(...result.rows);
       state.evaluations.push(...result.evals);
       state.evaluationSummaries.push(...result.summaries);
+      if (result.rows.length) state.detailLoaded = true;
     }
     render();
-    setStatus(`Done. ${state.evaluationSummaries.length} evaluations and ${state.rows.length} question rows loaded. Raw rows are kept in browser memory/local export only.`);
+    const detailText = state.detailLoaded ? `${state.rows.length} question rows loaded.` : 'Question-level detail will load on download/drilldown.';
+    setStatus(`Dashboard refreshed. ${uniqueEvalSummaries().length} unique evaluations loaded. ${detailText}`);
   } catch (err) {
     console.error(err);
     setStatus(`Error: ${err.message}`);
     alert(err.message);
   } finally {
-    $('runBtn').disabled = false;
+    setBusy(false);
+  }
+}
+async function ensureDetailRowsLoaded() {
+  if (state.detailLoaded && state.rows.length) return;
+  const cfg = getConfigFromUi();
+  if (!state.token?.access_token) { alert('Sign in first.'); return; }
+  if (!cfg.startDate || !cfg.endDate) { alert('Select a date range.'); return; }
+  setBusy(true);
+  try {
+    state.rows = [];
+    state.evaluations = [];
+    state.evaluationSummaries = [];
+    const types = cfg.recordFilter === 'both' ? ['evaluation', 'calibration'] : [cfg.recordFilter];
+    for (const t of types) {
+      setStatus(`Loading ${t} question-level detail for export...`);
+      const result = await fetchRecordType(t);
+      state.rows.push(...result.rows);
+      state.evaluations.push(...result.evals);
+      state.evaluationSummaries.push(...result.summaries);
+    }
+    state.detailLoaded = true;
+    render();
+    setStatus(`Detail loaded. ${state.evaluationSummaries.length} evaluations and ${state.rows.length} question rows are ready for export.`);
+  } finally {
+    setBusy(false);
   }
 }
 function uniqueEvalSummaries() {
   return [...new Map(state.evaluationSummaries.map((e) => [e.evaluation_id, e])).values()];
 }
+function chartReady() { return typeof Chart !== 'undefined'; }
+function destroyChart(id) {
+  if (state.charts[id]) {
+    state.charts[id].destroy();
+    delete state.charts[id];
+  }
+}
+function renderEmptyChart(id, message) {
+  destroyChart(id);
+  const canvas = $(id);
+  if (!canvas) return;
+  const shell = canvas.parentElement;
+  shell.querySelectorAll('.chart-empty').forEach((x) => x.remove());
+  canvas.classList.add('hidden');
+  const empty = document.createElement('div');
+  empty.className = 'chart-empty';
+  empty.textContent = message;
+  shell.appendChild(empty);
+}
+function renderChart(id, config) {
+  if (!chartReady()) { renderEmptyChart(id, 'Chart library is still loading. Refresh again in a moment.'); return; }
+  const canvas = $(id);
+  const shell = canvas.parentElement;
+  shell.querySelectorAll('.chart-empty').forEach((x) => x.remove());
+  canvas.classList.remove('hidden');
+  destroyChart(id);
+  state.charts[id] = new Chart(canvas, config);
+}
+function scoreClass(value) {
+  const num = n(value);
+  if (num === null) return '';
+  if (num >= 90) return 'score-good';
+  if (num >= 75) return 'score-warn';
+  return 'score-bad';
+}
+function scoreBadge(value) {
+  const text = htmlEscape(value);
+  const cls = scoreClass(value);
+  return cls ? `<span class="score-badge ${cls}">${text}</span>` : text;
+}
 function render() {
   const evals = uniqueEvalSummaries();
   $('metricEvals').textContent = evals.length;
+  $('metricEvalsSub').textContent = state.detailLoaded ? `${state.rows.length} question rows loaded` : 'Fast aggregate view';
   $('metricAvg').textContent = fmt(avg(evals.map((e) => e.total_score)), 1);
   $('metricCriticalAvg').textContent = fmt(avg(evals.map((e) => e.total_critical_score)), 1);
   $('metricAiAvg').textContent = fmt(avg(evals.filter((e) => e.system_submitted).map((e) => e.ai_score)), 1);
   $('metricCritical').textContent = evals.filter((e) => e.critical_failure).length;
   $('metricQuestionFailures').textContent = state.rows.filter((r) => r.failed_kill_question === true || (r.question_is_critical === true && n(r.question_score) === 0)).length;
-  renderTrend(evals);
-  renderFormSummary(evals);
-  renderGroupSummary();
-  renderQuestionSummary();
+  const trendRows = renderTrend(evals);
+  const formRows = renderFormSummary(evals);
+  const groupRows = renderGroupSummary();
+  const questionRows = renderQuestionSummary();
   renderAgentTeamSummary(evals);
-  renderAnswerSummary();
+  const answerRows = renderAnswerSummary();
+  renderCriticalTrendChart(trendRows);
+  renderFormChart(formRows);
+  renderGroupChart(groupRows);
+  renderQuestionChart(questionRows);
+  renderAnswerChart(answerRows);
+  renderAiChart(evals);
 }
 function renderTrend(evals) {
   const map = new Map();
@@ -615,11 +900,40 @@ function renderTrend(evals) {
     avg_total_score: fmt(avg(items.map((e) => e.total_score)), 1),
     avg_critical_score: fmt(avg(items.map((e) => e.total_critical_score)), 1),
     critical_failure_evals: items.filter((e) => e.critical_failure).length,
+    failed_critical_questions: items.reduce((total, e) => total + (n(e.failed_critical_questions) || 0), 0),
   }));
+  renderTrendChart(rows);
   $('trendTable').innerHTML = makeTable(rows);
+  return rows;
+}
+function renderTrendChart(rows) {
+  if (!rows.length) { renderEmptyChart('trendScoreChart', 'No evaluations match the selected filters.'); return; }
+  renderChart('trendScoreChart', {
+    type: 'bar',
+    data: {
+      labels: rows.map((r) => r.date),
+      datasets: [
+        { type: 'bar', label: 'Evaluations', data: rows.map((r) => r.evaluations), backgroundColor: 'rgba(99, 102, 241, .32)', borderColor: '#6366f1', borderWidth: 1, yAxisID: 'y' },
+        { type: 'line', label: 'Avg score', data: rows.map((r) => n(r.avg_total_score)), borderColor: '#10b981', backgroundColor: '#10b981', tension: .35, yAxisID: 'score' },
+        { type: 'line', label: 'Avg critical score', data: rows.map((r) => n(r.avg_critical_score)), borderColor: '#f97316', backgroundColor: '#f97316', tension: .35, yAxisID: 'score' },
+      ],
+    },
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, title: { display: true, text: 'Evaluations' } }, score: { beginAtZero: true, max: 100, position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Score %' } } } },
+  });
+}
+function renderCriticalTrendChart(rows) {
+  if (!rows.length) { renderEmptyChart('criticalTrendChart', 'Critical trend appears after the dashboard refreshes.'); return; }
+  renderChart('criticalTrendChart', {
+    type: 'bar',
+    data: { labels: rows.map((r) => r.date), datasets: [
+      { label: 'Critical failure evals', data: rows.map((r) => r.critical_failure_evals), backgroundColor: 'rgba(249, 115, 22, .72)' },
+      { label: 'Failed critical questions', data: rows.map((r) => r.failed_critical_questions), backgroundColor: 'rgba(239, 68, 68, .62)' },
+    ] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } },
+  });
 }
 function renderFormSummary(evals) {
-  const map = groupBy(evals, (e) => `${e.form_id}||${e.form_name}`);
+  const map = groupBy(evals, (e) => `${e.form_id}||${e.form_name || e.form_id || 'Unknown form'}`);
   const rows = [...map.entries()].map(([key, items]) => {
     const [, form] = key.split('||');
     return {
@@ -632,15 +946,38 @@ function renderFormSummary(evals) {
     };
   }).sort((a, b) => Number(b.evaluations) - Number(a.evaluations));
   $('formSummary').innerHTML = makeTable(rows);
+  return rows;
+}
+function renderFormChart(rows) {
+  const top = rows.slice(0, 10).sort((a, b) => Number(a.avg_total_score) - Number(b.avg_total_score));
+  if (!top.length) { renderEmptyChart('formPerformanceChart', 'No form performance data yet.'); return; }
+  renderChart('formPerformanceChart', {
+    type: 'bar',
+    data: { labels: top.map((r) => r.form), datasets: [
+      { label: 'Avg score', data: top.map((r) => n(r.avg_total_score)), backgroundColor: 'rgba(20, 184, 166, .72)' },
+      { label: 'Avg critical score', data: top.map((r) => n(r.avg_critical_score)), backgroundColor: 'rgba(249, 115, 22, .68)' },
+    ] },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true, max: 100 } } },
+  });
 }
 function renderGroupSummary() {
   const groupRows = [...new Map(state.rows.map((r) => [`${r.evaluation_id}||${r.question_group_id}`, r])).values()];
-  const map = groupBy(groupRows, (r) => `${r.evaluation_form_name}||${r.question_group_name}`);
+  const map = groupBy(groupRows, (r) => `${r.evaluation_form_name}||${r.question_group_name || 'Unknown group'}`);
   const rows = [...map.entries()].map(([key, items]) => {
     const [form, group] = key.split('||');
     return { form, group, evaluations: items.length, avg_group_score: fmt(avg(items.map((r) => r.question_group_score)), 1) };
   }).sort((a, b) => Number(a.avg_group_score) - Number(b.avg_group_score));
-  $('groupSummary').innerHTML = makeTable(rows);
+  $('groupSummary').innerHTML = state.detailLoaded ? makeTable(rows) : '<p class="note">Question group detail loads when detail data is requested.</p>';
+  return rows;
+}
+function renderGroupChart(rows) {
+  const top = rows.slice(0, 10);
+  if (!top.length) { renderEmptyChart('groupPerformanceChart', 'Load detail data to see group score hotspots.'); return; }
+  renderChart('groupPerformanceChart', {
+    type: 'bar',
+    data: { labels: top.map((r) => r.group), datasets: [{ label: 'Avg group score', data: top.map((r) => n(r.avg_group_score)), backgroundColor: 'rgba(139, 92, 246, .72)' }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 }, x: { ticks: { maxRotation: 35, minRotation: 0 } } } },
+  });
 }
 function renderQuestionSummary() {
   const map = groupBy(state.rows, (r) => `${r.evaluation_form_name}||${r.question_group_name}||${r.question_id}||${r.question_text}`);
@@ -658,7 +995,17 @@ function renderQuestionSummary() {
       ai_overrides: items.filter((r) => r.ai_answer_overridden === 'true').length,
     };
   }).sort((a, b) => Number(a.avg_question_score) - Number(b.avg_question_score)).slice(0, 100);
-  $('questionSummary').innerHTML = makeTable(rows);
+  $('questionSummary').innerHTML = state.detailLoaded ? makeTable(rows) : '<p class="note">Question detail is loaded on demand for export or drilldown.</p>';
+  return rows;
+}
+function renderQuestionChart(rows) {
+  const top = rows.slice(0, 10).reverse();
+  if (!top.length) { renderEmptyChart('questionPerformanceChart', 'Load detail data to see underperforming questions.'); return; }
+  renderChart('questionPerformanceChart', {
+    type: 'bar',
+    data: { labels: top.map((r) => r.question.slice(0, 80)), datasets: [{ label: 'Avg question score', data: top.map((r) => n(r.avg_question_score)), backgroundColor: 'rgba(239, 68, 68, .66)' }] },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true, max: 100 } } },
+  });
 }
 function renderAgentTeamSummary(evals) {
   const map = groupBy(evals, (e) => `${e.team_name || 'No team'}||${e.agent_name || e.agent_id || 'Unknown agent'}`);
@@ -682,7 +1029,31 @@ function renderAnswerSummary() {
     const [form, question, answer] = key.split('||');
     return { form, question, answer, count: items.length, avg_question_score: fmt(avg(items.map((r) => r.question_score)), 1) };
   }).sort((a, b) => Number(b.count) - Number(a.count)).slice(0, 150);
-  $('answerSummary').innerHTML = makeTable(rows);
+  $('answerSummary').innerHTML = state.detailLoaded ? makeTable(rows) : '<p class="note">Answer distribution loads with question-level detail.</p>';
+  return rows;
+}
+function renderAnswerChart(rows) {
+  const top = rows.slice(0, 12);
+  if (!top.length) { renderEmptyChart('answerDistributionChart', 'Load detail data to see answer distribution.'); return; }
+  renderChart('answerDistributionChart', {
+    type: 'bar',
+    data: { labels: top.map((r) => `${r.answer}`.slice(0, 50)), datasets: [{ label: 'Answer count', data: top.map((r) => r.count), backgroundColor: 'rgba(59, 130, 246, .68)' }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } },
+  });
+}
+function renderAiChart(evals) {
+  const automated = evals.filter((e) => e.system_submitted).length;
+  const human = Math.max(0, evals.length - automated);
+  const overrides = state.rows.filter((r) => r.ai_answer_overridden === 'true').length;
+  const accepted = state.rows.filter((r) => r.ai_answer_matches_final === 'true').length;
+  const labels = state.detailLoaded && (accepted || overrides) ? ['AI accepted', 'AI overridden'] : ['Human submitted', 'System submitted'];
+  const values = state.detailLoaded && (accepted || overrides) ? [accepted, overrides] : [human, automated];
+  if (!evals.length && !values.some(Boolean)) { renderEmptyChart('aiScoringChart', 'AI and human evaluation mix appears after refresh.'); return; }
+  renderChart('aiScoringChart', {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: values, backgroundColor: ['#06b6d4', '#8b5cf6', '#f97316'] }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } },
+  });
 }
 function groupBy(items, keyFn) {
   const map = new Map();
@@ -696,10 +1067,77 @@ function groupBy(items, keyFn) {
 function makeTable(rows) {
   if (!rows.length) return '<p class="note">No data.</p>';
   const cols = Object.keys(rows[0]);
-  return `<table><thead><tr>${cols.map((c) => `<th>${htmlEscape(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td>${htmlEscape(r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  const cell = (col, value) => /score|avg/i.test(col) ? scoreBadge(value) : htmlEscape(value);
+  return `<table><thead><tr>${cols.map((c) => `<th>${htmlEscape(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td>${cell(c, r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
-function exportCsv() {
-  if (!state.rows.length) { alert('Run the dashboard first.'); return; }
+
+function countSelectedLabel(id, singular, plural = `${singular}s`) {
+  const values = selectedValues(id);
+  if (!values.length) return null;
+  return `${values.length} ${values.length === 1 ? singular : plural}`;
+}
+function updateActiveFilterChips() {
+  const chipHost = $('activeFilterChips');
+  if (!chipHost) return;
+  const cfg = getConfigFromUi();
+  const sourceLabel = $('sourceFilter').selectedOptions[0]?.textContent || 'All sources';
+  const recordLabel = $('recordFilter').selectedOptions[0]?.textContent || 'Evaluations';
+  const chips = [
+    `${cfg.startDate || 'Any start'} → ${cfg.endDate || 'Any end'}`,
+    sourceLabel,
+    recordLabel,
+    countSelectedLabel('formFilter', 'form'),
+    countSelectedLabel('agentFilter', 'agent'),
+    countSelectedLabel('queueFilter', 'queue'),
+    countSelectedLabel('divisionFilter', 'division'),
+    countSelectedLabel('teamFilter', 'team'),
+  ].filter(Boolean);
+  chipHost.innerHTML = chips.map((chip) => `<span class="chip">${htmlEscape(chip)}</span>`).join('');
+}
+
+function setDatePreset(preset) {
+  const now = new Date();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const startOfMonth = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  const endOfMonth = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+  let start = new Date(now), end = new Date(now);
+  if (preset === 'yesterday') { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
+  if (preset === '7d') start.setDate(start.getDate() - 6);
+  if (preset === '30d') start.setDate(start.getDate() - 29);
+  if (preset === 'thisMonth') { start = startOfMonth(now); end = now; }
+  if (preset === 'lastMonth') { const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)); start = startOfMonth(last); end = endOfMonth(last); }
+  $('startDate').value = iso(start);
+  $('endDate').value = iso(end);
+  updateActiveFilterChips();
+  debouncedRun();
+}
+function wireDatePresets() {
+  document.querySelectorAll('[data-preset]').forEach((button) => button.addEventListener('click', () => setDatePreset(button.dataset.preset)));
+}
+
+function setFilterDrawerOpen(open) {
+  const drawer = $('filterDrawer');
+  const backdrop = $('drawerBackdrop');
+  const button = $('filterDrawerBtn');
+  drawer.classList.toggle('open', open);
+  document.body.classList.toggle('filters-open', open);
+  drawer.setAttribute('aria-hidden', String(!open));
+  backdrop.classList.toggle('hidden', !open);
+  button.setAttribute('aria-expanded', String(open));
+}
+function wireDrawerControls() {
+  $('filterDrawerBtn').addEventListener('click', () => setFilterDrawerOpen(true));
+  $('closeFilterDrawerBtn').addEventListener('click', () => setFilterDrawerOpen(false));
+  $('drawerBackdrop').addEventListener('click', () => setFilterDrawerOpen(false));
+  $('resetFiltersBtn').addEventListener('click', resetFilters);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setFilterDrawerOpen(false);
+  });
+}
+
+async function exportCsv() {
+  if (!state.rows.length) await ensureDetailRowsLoaded();
+  if (!state.rows.length) { alert('No question-level detail is available for the selected filters.'); return; }
   const cols = Object.keys(state.rows[0]);
   const csv = [cols.join(',')].concat(state.rows.map((r) => cols.map((c) => {
     const v = String(r[c] ?? '');
@@ -719,14 +1157,17 @@ async function init() {
   $('loginBtn').addEventListener('click', startLogin);
   $('continueLoginBtn').addEventListener('click', continueLogin);
   $('logoutBtn').addEventListener('click', logout);
-  $('runBtn').addEventListener('click', runDashboard);
   $('exportBtn').addEventListener('click', exportCsv);
-  $('refreshMetadataBtn').addEventListener('click', () => refreshMetadata(true));
-  $('clearCacheBtn').addEventListener('click', clearCache);
-  ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', debouncedRun));
+  wireDrawerControls();
+  wireDatePresets();
+  document.addEventListener('click', closeMultiFiltersOnOutsideClick);
+  ['startDate','endDate','sourceFilter','recordFilter'].forEach((id) => $(id).addEventListener('change', debouncedRun));
+  ['startDate','endDate','sourceFilter','recordFilter'].forEach((id) => $(id).addEventListener('change', updateActiveFilterChips));
   try { await handleAuthCallback(); } catch (e) { console.error(e); alert(e.message); }
   loadToken();
   if (state.token?.access_token) refreshMetadata(false).catch((e) => console.warn(e));
+  updateActiveFilterChips();
+  render();
   setStatus(`Ready. App version ${APP_VERSION}.`);
 }
 init();
