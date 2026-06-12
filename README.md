@@ -6,25 +6,21 @@ GitHub Pages-hosted Genesys Cloud Client App for dynamic quality evaluation dash
 
 - OAuth Authorization Code + PKCE login flow
 - Live Genesys Cloud API calls
-- Interactive Chart.js dashboard with KPI cards, score/volume trends, critical-failure trends, form bars, coaching hotspots, answer distribution, and AI scoring mix
+- Question-level dashboard
 - Static GitHub Pages dashboard files served directly from the repository
 - Browser-session OAuth and metadata caching so the GitHub-hosted app can refresh quickly without adding a separate database
-- Auto-refreshing filters for date presets, evaluation/calibration mode, human/auto source, forms, agents, queues, divisions, and work teams
+- Evaluation / calibration / human / auto-submitted filters plus forms, agents, queues, divisions, and work teams
 
 ## Dashboard direction
 
 This repo is evolving from a starter question-level export into a dynamic quality-management dashboard that mirrors the feel of Genesys Cloud performance views:
 
-- A modern command-center layout with KPI cards, Chart.js trend and bar charts, drill-down tables, and a slide-out filter drawer.
+- A modern command-center layout with KPI cards, a trend visualization, drill-down tables, and a slide-out filter drawer.
 - Dynamic filters for dates, evaluation source, calibration mode, forms, agents, queues, divisions, and work teams.
-- Aggregate-first dashboard loading for quick KPIs where the Genesys Cloud quality evaluation search API is available, with browser-side safeguards that calculate evaluation-level measures from unique evaluations rather than duplicated question rows.
-- Live Genesys Cloud API reads for quality evaluation search, analytics evaluation aggregates, on-demand evaluation detail export, and metadata APIs for users, queues, divisions, work teams, and published forms.
+- Browser-side calculations for score averages, critical failures, AI scoring averages, underperforming questions, group performance, answer distribution, and agent/team views.
+- Live Genesys Cloud API reads for evaluation aggregates and evaluation details, plus metadata APIs for users, queues, divisions, work teams, and published forms.
 
 Future phases should add richer charts, saved report presets, queue/division security checks, optional backend scheduling, alerting, and anomaly detection while keeping raw evaluation data storage intentional and governed.
-
-## Data strategy
-
-The dashboard uses an aggregate-first flow so filter changes can refresh KPIs and charts quickly. It attempts `POST /api/v2/quality/evaluations/search` for quality evaluation search metrics, keeps `POST /api/v2/analytics/evaluations/aggregates/query` for evaluation ID/time-series fallback behavior, and only expands full question-level rows when the user requests a detailed CSV export or the search API is unavailable. Evaluation-level measures are calculated from unique evaluation IDs so question rows do not inflate counts or averages.
 
 ## Genesys setup
 
