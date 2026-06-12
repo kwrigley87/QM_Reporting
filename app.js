@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.3.1';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -841,6 +841,24 @@ function renderCriticalTrendChart(rows) {
     options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } },
   });
 }
+function renderTrendChart(rows) {
+  const chart = $('trendChart');
+  if (!rows.length) {
+    chart.className = 'trend-chart empty-state';
+    chart.textContent = 'No evaluations match the selected filters.';
+    return;
+  }
+  chart.className = 'trend-chart';
+  chart.innerHTML = rows.map((row) => {
+    const score = Math.max(0, Math.min(100, n(row.avg_total_score) ?? 0));
+    const label = row.date === 'Unknown' ? 'Unknown' : row.date.slice(5);
+    return `<div class="trend-bar" title="${htmlEscape(row.date)} average score ${htmlEscape(row.avg_total_score)}">
+      <div class="trend-bar-track"><div class="trend-bar-fill" style="height:${score}%"></div></div>
+      <strong>${htmlEscape(row.avg_total_score)}%</strong>
+      <small>${htmlEscape(label)} · ${htmlEscape(row.evaluations)} evals</small>
+    </div>`;
+  }).join('');
+}
 function renderFormSummary(evals) {
   const map = groupBy(evals, (e) => `${e.form_id}||${e.form_name || e.form_id || 'Unknown form'}`);
   const rows = [...map.entries()].map(([key, items]) => {
@@ -1002,26 +1020,30 @@ function updateActiveFilterChips() {
   chipHost.innerHTML = chips.map((chip) => `<span class="chip">${htmlEscape(chip)}</span>`).join('');
 }
 
-function setDatePreset(preset) {
-  const now = new Date();
-  const iso = (d) => d.toISOString().slice(0, 10);
-  const startOfMonth = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  const endOfMonth = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
-  let start = new Date(now), end = new Date(now);
-  if (preset === 'yesterday') { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
-  if (preset === '7d') start.setDate(start.getDate() - 6);
-  if (preset === '30d') start.setDate(start.getDate() - 29);
-  if (preset === 'thisMonth') { start = startOfMonth(now); end = now; }
-  if (preset === 'lastMonth') { const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)); start = startOfMonth(last); end = endOfMonth(last); }
-  $('startDate').value = iso(start);
-  $('endDate').value = iso(end);
-  updateActiveFilterChips();
-  debouncedRun();
+function countSelectedLabel(id, singular, plural = `${singular}s`) {
+  const values = selectedValues(id);
+  if (!values.length) return null;
+  return `${values.length} ${values.length === 1 ? singular : plural}`;
 }
-function wireDatePresets() {
-  document.querySelectorAll('[data-preset]').forEach((button) => button.addEventListener('click', () => setDatePreset(button.dataset.preset)));
+function updateActiveFilterChips() {
+  const chipHost = $('activeFilterChips');
+  if (!chipHost) return;
+  const cfg = getConfigFromUi();
+  const sourceLabel = $('sourceFilter').selectedOptions[0]?.textContent || 'All sources';
+  const recordLabel = $('recordFilter').selectedOptions[0]?.textContent || 'Evaluations';
+  const chips = [
+    `${cfg.startDate || 'Any start'} → ${cfg.endDate || 'Any end'}`,
+    sourceLabel,
+    recordLabel,
+    countSelectedLabel('formFilter', 'form'),
+    countSelectedLabel('agentFilter', 'agent'),
+    countSelectedLabel('queueFilter', 'queue'),
+    countSelectedLabel('divisionFilter', 'division'),
+    countSelectedLabel('teamFilter', 'team'),
+    cfg.autoRefresh ? 'Auto refresh on' : 'Manual refresh',
+  ].filter(Boolean);
+  chipHost.innerHTML = chips.map((chip) => `<span class="chip">${htmlEscape(chip)}</span>`).join('');
 }
-
 function setFilterDrawerOpen(open) {
   const drawer = $('filterDrawer');
   const backdrop = $('drawerBackdrop');
@@ -1044,9 +1066,8 @@ function wireDrawerControls() {
   });
 }
 
-async function exportCsv() {
-  if (!state.rows.length) await ensureDetailRowsLoaded();
-  if (!state.rows.length) { alert('No question-level detail is available for the selected filters.'); return; }
+function exportCsv() {
+  if (!state.rows.length) { alert('Run the dashboard first.'); return; }
   const cols = Object.keys(state.rows[0]);
   const csv = [cols.join(',')].concat(state.rows.map((r) => cols.map((c) => {
     const v = String(r[c] ?? '');
@@ -1071,14 +1092,12 @@ async function init() {
   $('refreshMetadataBtn').addEventListener('click', () => refreshMetadata(true));
   $('clearCacheBtn').addEventListener('click', clearCache);
   wireDrawerControls();
-  wireDatePresets();
   ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','queueFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', debouncedRun));
   ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','queueFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', updateActiveFilterChips));
   try { await handleAuthCallback(); } catch (e) { console.error(e); alert(e.message); }
   loadToken();
   if (state.token?.access_token) refreshMetadata(false).catch((e) => console.warn(e));
   updateActiveFilterChips();
-  render();
   setStatus(`Ready. App version ${APP_VERSION}.`);
 }
 init();
