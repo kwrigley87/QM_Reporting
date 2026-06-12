@@ -203,6 +203,18 @@
     </div>
   </aside>
 
+      <label class="inline-check"><input id="autoRefresh" type="checkbox" checked /> Auto refresh charts when filters change</label>
+      <p class="note">Use Ctrl/Cmd-click to multi-select values. Changing filters refreshes the dashboard automatically when auto refresh is on.</p>
+    </div>
+
+    <div class="drawer-footer">
+      <button id="applyFiltersBtn" class="primary-button">Apply filters</button>
+      <button id="refreshMetadataBtn" class="secondary-button">Refresh filter lists</button>
+      <button id="clearCacheBtn" class="secondary-button">Clear browser cache</button>
+    </div>
+  </aside>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
