@@ -32,7 +32,12 @@ let state = {
 };
 
 const $ = (id) => document.getElementById(id);
-const selectedValues = (id) => Array.from($(id).selectedOptions || []).map((o) => o.value).filter(Boolean);
+function selectedValues(id) {
+  const el = $(id);
+  if (!el) return [];
+  if (el.tagName === 'SELECT') return Array.from(el.selectedOptions || []).map((o) => o.value).filter(Boolean);
+  return Array.from(el.querySelectorAll('input[type=checkbox]:checked')).map((o) => o.value).filter(Boolean);
+}
 
 function setStatus(message) { $('status').textContent = message; }
 function setBusy(isBusy) {
@@ -121,7 +126,6 @@ function hydrateUi() {
   $('endDate').value = cfg.endDate || today(0);
   $('sourceFilter').value = cfg.sourceFilter || 'both';
   $('recordFilter').value = cfg.recordFilter || 'evaluation';
-  $('autoRefresh').checked = cfg.autoRefresh !== false;
   clearSelect('agentFilter', 'Sign in, then refresh filter lists');
   clearSelect('formFilter', 'Forms will populate after refresh or first dashboard run');
   clearSelect('divisionFilter', 'Sign in, then refresh filter lists');
@@ -159,7 +163,14 @@ async function startLogin() {
 async function continueLogin() {
   const cfg = getConfigFromUi();
   const region = $('loginRegion').value;
-  const oauth = oauthForRegion(region);
+  let oauth;
+  try {
+    oauth = oauthForRegion(region);
+  } catch (e) {
+    $('regionHelp').textContent = e.message;
+    alert(e.message);
+    return;
+  }
   cfg.region = region;
   state.region = region;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
@@ -275,11 +286,73 @@ async function fetchAllPages(path, key = 'entities', pageSize = 100) {
   return all;
 }
 function setOptions(id, items, selected = []) {
+  const el = $(id);
   const selectedSet = new Set(selected);
-  $(id).innerHTML = items.map((x) => `<option value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' selected' : ''}>${htmlEscape(x.name || x.email || x.id)}</option>`).join('');
+  const placeholder = el.dataset.placeholder || 'Select values';
+  if (el.tagName === 'SELECT') {
+    el.innerHTML = items.map((x) => `<option value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' selected' : ''}>${htmlEscape(x.name || x.email || x.id)}</option>`).join('');
+    return;
+  }
+  const selectedCount = items.filter((x) => selectedSet.has(x.id)).length;
+  const summary = selectedCount ? `${selectedCount} selected` : placeholder;
+  el.innerHTML = `<button type="button" class="multi-filter-button" aria-expanded="false">${htmlEscape(summary)}</button>
+    <div class="multi-filter-menu hidden">
+      <label class="multi-filter-search">Search <input type="search" placeholder="Filter options" /></label>
+      <div class="multi-filter-options">${items.length ? items.map((x) => {
+        const label = x.name || x.email || x.id;
+        return `<label class="check-row"><input type="checkbox" value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' checked' : ''} /> <span>${htmlEscape(label)}</span></label>`;
+      }).join('') : `<p class="note">${htmlEscape(placeholder)}</p>`}</div>
+      <button type="button" class="link-button clear-filter-button">Clear selected</button>
+    </div>`;
+  wireMultiFilter(id);
+}
+function wireMultiFilter(id) {
+  const el = $(id);
+  const button = el.querySelector('.multi-filter-button');
+  const menu = el.querySelector('.multi-filter-menu');
+  const search = el.querySelector('input[type=search]');
+  button?.addEventListener('click', () => {
+    document.querySelectorAll('.multi-filter-menu').forEach((m) => { if (m !== menu) m.classList.add('hidden'); });
+    const open = menu.classList.toggle('hidden') === false;
+    button.setAttribute('aria-expanded', String(open));
+    if (open) search?.focus();
+  });
+  el.querySelectorAll('input[type=checkbox]').forEach((checkbox) => checkbox.addEventListener('change', () => {
+    updateMultiFilterSummary(id);
+    updateActiveFilterChips();
+    debouncedRun();
+  }));
+  search?.addEventListener('input', () => {
+    const term = search.value.toLowerCase();
+    el.querySelectorAll('.check-row').forEach((row) => row.classList.toggle('hidden', !row.textContent.toLowerCase().includes(term)));
+  });
+  el.querySelector('.clear-filter-button')?.addEventListener('click', () => {
+    clearMultiFilterSelection(id);
+    updateActiveFilterChips();
+    debouncedRun();
+  });
+}
+function closeMultiFiltersOnOutsideClick(event) {
+  if (event.target.closest('.multi-filter')) return;
+  document.querySelectorAll('.multi-filter-menu').forEach((menu) => menu.classList.add('hidden'));
+  document.querySelectorAll('.multi-filter-button').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+}
+function updateMultiFilterSummary(id) {
+  const el = $(id);
+  const button = el.querySelector('.multi-filter-button');
+  if (!button) return;
+  const count = selectedValues(id).length;
+  button.textContent = count ? `${count} selected` : (el.dataset.placeholder || 'Select values');
+}
+function clearMultiFilterSelection(id) {
+  const el = $(id);
+  el.querySelectorAll('input[type=checkbox]').forEach((checkbox) => { checkbox.checked = false; });
+  updateMultiFilterSummary(id);
 }
 function clearSelect(id, placeholder) {
-  $(id).innerHTML = `<option value="" disabled>${htmlEscape(placeholder)}</option>`;
+  const el = $(id);
+  if (el) el.dataset.placeholder = placeholder;
+  setOptions(id, [], []);
 }
 async function refreshMetadata(force = false) {
   if (!state.token?.access_token) return;
@@ -671,7 +744,7 @@ async function fetchRecordType(recordType) {
   return { rows, evals, summaries };
 }
 function debouncedRun() {
-  if (!$('autoRefresh').checked || !state.token?.access_token) return;
+  if (!state.token?.access_token) return;
   clearTimeout(state.runTimer);
   state.runTimer = setTimeout(() => runDashboard(), 700);
 }
