@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.1';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -68,11 +68,12 @@ function loadCache() {
       forms: cache.forms || {},
       divisions: cache.divisions || {},
       teams: cache.teams || {},
+      queues: cache.queues || {},
       evaluations: cache.evaluations || {},
       savedAt: cache.savedAt || Date.now(),
     };
   } catch {
-    return { users: {}, forms: {}, divisions: {}, teams: {}, evaluations: {}, savedAt: Date.now() };
+    return { users: {}, forms: {}, divisions: {}, teams: {}, queues: {}, evaluations: {}, savedAt: Date.now() };
   }
 }
 function saveCache() {
@@ -87,7 +88,9 @@ function clearCache() {
   clearSelect('formFilter', 'Forms will populate after refresh or first dashboard run');
   clearSelect('divisionFilter', 'Sign in, then refresh filter lists');
   clearSelect('teamFilter', 'Sign in, then refresh filter lists');
-  setStatus('Browser cache cleared. Click Refresh filter lists or Run dashboard to retrieve fresh users, forms, divisions, and teams.');
+  clearSelect('queueFilter', 'Sign in, then refresh filter lists');
+  updateActiveFilterChips();
+  setStatus('Browser cache cleared. Click Refresh filter lists or Run dashboard to retrieve fresh users, forms, queues, divisions, and teams.');
 }
 function getConfigFromUi() {
   return {
@@ -100,6 +103,7 @@ function getConfigFromUi() {
     agentIds: selectedValues('agentFilter'),
     divisionIds: selectedValues('divisionFilter'),
     teamIds: selectedValues('teamFilter'),
+    queueIds: selectedValues('queueFilter'),
     autoRefresh: $('autoRefresh').checked,
   };
 }
@@ -116,6 +120,8 @@ function hydrateUi() {
   clearSelect('formFilter', 'Forms will populate after refresh or first dashboard run');
   clearSelect('divisionFilter', 'Sign in, then refresh filter lists');
   clearSelect('teamFilter', 'Sign in, then refresh filter lists');
+  clearSelect('queueFilter', 'Sign in, then refresh filter lists');
+  updateActiveFilterChips();
 }
 function apiHost(region = state.region) { return `api.${region}`; }
 function loginHost(region = state.region) { return `login.${region}`; }
@@ -284,6 +290,10 @@ async function refreshMetadata(force = false) {
       state.cache.teamList = teams.map((t) => ({ id: t.id, name: t.name || t.id }));
     } catch (e) { console.warn('Team list failed', e); }
     try {
+      const queues = await fetchAllPages('/api/v2/routing/queues', 'entities', 100);
+      state.cache.queueList = queues.map((q) => ({ id: q.id, name: q.name || q.id }));
+    } catch (e) { console.warn('Queue list failed', e); }
+    try {
       const forms = await fetchAllPages('/api/v2/quality/publishedforms/evaluations', 'entities', 100);
       state.cache.formList = forms.map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id }));
     } catch (e) { console.warn('Published form list failed; forms will populate from evaluations', e); }
@@ -298,6 +308,7 @@ function populateFilterOptions(cfg = loadConfig()) {
   setOptions('agentFilter', (state.cache.userList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.agentIds || []);
   setOptions('divisionFilter', (state.cache.divisionList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.divisionIds || []);
   setOptions('teamFilter', (state.cache.teamList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.teamIds || []);
+  setOptions('queueFilter', (state.cache.queueList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.queueIds || []);
   const fromDetails = Object.values(state.cache.forms || {}).map((x) => x.data).filter(Boolean).map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id }));
   const forms = [...(state.cache.formList || []), ...fromDetails];
   const uniqueForms = [...new Map(forms.map((f) => [f.id, f])).values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -334,6 +345,7 @@ function buildAggregateQuery(startDate, endDate, recordType, sourceFilter, cfg) 
   if (sourceFilter === 'auto') clauses.push({ type: 'or', predicates: [{ dimension: 'systemSubmitted', value: 'true' }] });
   if (cfg.agentIds?.length) clauses.push({ type: 'or', predicates: cfg.agentIds.map((value) => ({ dimension: 'agentId', value })) });
   if (cfg.formIds?.length) clauses.push({ type: 'or', predicates: cfg.formIds.map((value) => ({ dimension: 'evaluationFormId', value })) });
+  if (cfg.queueIds?.length) clauses.push({ type: 'or', predicates: cfg.queueIds.map((value) => ({ dimension: 'queueId', value })) });
   return {
     interval: `${startDate}T00:00:00.000Z/${endDate}T23:59:59.999Z`,
     granularity: 'P1D',
@@ -501,6 +513,7 @@ function passesClientFilters(evaluation, rows, cfg) {
   const first = rows[0] || {};
   if (cfg.teamIds?.length && !cfg.teamIds.includes(evaluation.agentTeam?.id || '')) return false;
   if (cfg.divisionIds?.length && !cfg.divisionIds.includes(first.agent_division_id || '')) return false;
+  if (cfg.queueIds?.length && !cfg.queueIds.includes(evaluation.queue?.id || first.queue_id || '')) return false;
   return true;
 }
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -616,7 +629,26 @@ function renderTrend(evals) {
     avg_critical_score: fmt(avg(items.map((e) => e.total_critical_score)), 1),
     critical_failure_evals: items.filter((e) => e.critical_failure).length,
   }));
+  renderTrendChart(rows);
   $('trendTable').innerHTML = makeTable(rows);
+}
+function renderTrendChart(rows) {
+  const chart = $('trendChart');
+  if (!rows.length) {
+    chart.className = 'trend-chart empty-state';
+    chart.textContent = 'No evaluations match the selected filters.';
+    return;
+  }
+  chart.className = 'trend-chart';
+  chart.innerHTML = rows.map((row) => {
+    const score = Math.max(0, Math.min(100, n(row.avg_total_score) ?? 0));
+    const label = row.date === 'Unknown' ? 'Unknown' : row.date.slice(5);
+    return `<div class="trend-bar" title="${htmlEscape(row.date)} average score ${htmlEscape(row.avg_total_score)}">
+      <div class="trend-bar-track"><div class="trend-bar-fill" style="height:${score}%"></div></div>
+      <strong>${htmlEscape(row.avg_total_score)}%</strong>
+      <small>${htmlEscape(label)} · ${htmlEscape(row.evaluations)} evals</small>
+    </div>`;
+  }).join('');
 }
 function renderFormSummary(evals) {
   const map = groupBy(evals, (e) => `${e.form_id}||${e.form_name}`);
@@ -698,6 +730,53 @@ function makeTable(rows) {
   const cols = Object.keys(rows[0]);
   return `<table><thead><tr>${cols.map((c) => `<th>${htmlEscape(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td>${htmlEscape(r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
+
+function countSelectedLabel(id, singular, plural = `${singular}s`) {
+  const values = selectedValues(id);
+  if (!values.length) return null;
+  return `${values.length} ${values.length === 1 ? singular : plural}`;
+}
+function updateActiveFilterChips() {
+  const chipHost = $('activeFilterChips');
+  if (!chipHost) return;
+  const cfg = getConfigFromUi();
+  const sourceLabel = $('sourceFilter').selectedOptions[0]?.textContent || 'All sources';
+  const recordLabel = $('recordFilter').selectedOptions[0]?.textContent || 'Evaluations';
+  const chips = [
+    `${cfg.startDate || 'Any start'} → ${cfg.endDate || 'Any end'}`,
+    sourceLabel,
+    recordLabel,
+    countSelectedLabel('formFilter', 'form'),
+    countSelectedLabel('agentFilter', 'agent'),
+    countSelectedLabel('queueFilter', 'queue'),
+    countSelectedLabel('divisionFilter', 'division'),
+    countSelectedLabel('teamFilter', 'team'),
+    cfg.autoRefresh ? 'Auto refresh on' : 'Manual refresh',
+  ].filter(Boolean);
+  chipHost.innerHTML = chips.map((chip) => `<span class="chip">${htmlEscape(chip)}</span>`).join('');
+}
+function setFilterDrawerOpen(open) {
+  const drawer = $('filterDrawer');
+  const backdrop = $('drawerBackdrop');
+  const button = $('filterDrawerBtn');
+  drawer.classList.toggle('open', open);
+  drawer.setAttribute('aria-hidden', String(!open));
+  backdrop.classList.toggle('hidden', !open);
+  button.setAttribute('aria-expanded', String(open));
+}
+function wireDrawerControls() {
+  $('filterDrawerBtn').addEventListener('click', () => setFilterDrawerOpen(true));
+  $('closeFilterDrawerBtn').addEventListener('click', () => setFilterDrawerOpen(false));
+  $('drawerBackdrop').addEventListener('click', () => setFilterDrawerOpen(false));
+  $('applyFiltersBtn').addEventListener('click', () => {
+    setFilterDrawerOpen(false);
+    runDashboard();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') setFilterDrawerOpen(false);
+  });
+}
+
 function exportCsv() {
   if (!state.rows.length) { alert('Run the dashboard first.'); return; }
   const cols = Object.keys(state.rows[0]);
@@ -723,10 +802,13 @@ async function init() {
   $('exportBtn').addEventListener('click', exportCsv);
   $('refreshMetadataBtn').addEventListener('click', () => refreshMetadata(true));
   $('clearCacheBtn').addEventListener('click', clearCache);
-  ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', debouncedRun));
+  wireDrawerControls();
+  ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','queueFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', debouncedRun));
+  ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','queueFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', updateActiveFilterChips));
   try { await handleAuthCallback(); } catch (e) { console.error(e); alert(e.message); }
   loadToken();
   if (state.token?.access_token) refreshMetadata(false).catch((e) => console.warn(e));
+  updateActiveFilterChips();
   setStatus(`Ready. App version ${APP_VERSION}.`);
 }
 init();
