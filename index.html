@@ -21,8 +21,7 @@
         <div class="signin-wrap">
           <button id="loginBtn" class="ghost-button">Sign in</button>
           <div id="regionPopover" class="popover hidden">
-            <div class="popover-title">Choose your Genesys Cloud region</div>
-            <label>Region
+            <label>Genesys Cloud region
               <select id="loginRegion">
                 <option value="mypurecloud.com">US East (mypurecloud.com)</option>
                 <option value="usw2.pure.cloud">US West (usw2.pure.cloud)</option>
@@ -37,11 +36,11 @@
                 <option value="sae1.pure.cloud">South America Sao Paulo (sae1.pure.cloud)</option>
               </select>
             </label>
-            <button id="continueLoginBtn" class="primary-button">Continue to Genesys</button>
-            <p id="regionHelp" class="note">Only regions with a configured OAuth client ID can sign in.</p>
+            <button id="continueLoginBtn">Continue</button>
+            <p class="note">The selected region determines the OAuth client and API host.</p>
           </div>
         </div>
-        <button id="logoutBtn" class="ghost-button hidden">Sign out</button>
+        <button id="logoutBtn" class="ghost-button">Sign out</button>
       </div>
     </header>
 
@@ -49,34 +48,26 @@
       <section class="hero panel">
         <div class="hero-copy">
           <span class="eyebrow">Live Genesys Cloud quality reporting</span>
-          <h1>Interactive QM performance cockpit.</h1>
-          <p>Filter-driven evaluation insights with fast aggregate KPIs, trend reporting, form performance, coaching hotspots, AI scoring intelligence, and on-demand question-level export.</p>
+          <h1>Beautiful, interactive QM performance views.</h1>
+          <p>Explore evaluation trends, critical failures, AI scoring, forms, queues, agents, divisions, and work teams with refresh-on-filter-change behavior similar to Genesys Cloud performance views.</p>
           <div id="activeFilterChips" class="filter-chips" aria-live="polite"></div>
         </div>
         <div class="hero-actions">
           <button id="filterDrawerBtn" class="primary-button" aria-controls="filterDrawer" aria-expanded="false">
             <span aria-hidden="true">☰</span> Filters
           </button>
-          <button id="exportBtn" class="secondary-button">Download detail CSV</button>
+          <button id="runBtn" class="success-button">Run dashboard</button>
+          <button id="exportBtn" class="secondary-button">Export question CSV</button>
         </div>
       </section>
 
-      <section class="quick-presets panel" aria-label="Quick date presets">
-        <button class="preset-button" data-preset="today">Today</button>
-        <button class="preset-button" data-preset="yesterday">Yesterday</button>
-        <button class="preset-button" data-preset="7d">Previous 7 days</button>
-        <button class="preset-button" data-preset="30d">Previous 30 days</button>
-        <button class="preset-button" data-preset="thisMonth">This month</button>
-        <button class="preset-button" data-preset="lastMonth">Last month</button>
-      </section>
-
       <section class="metrics metrics-6" aria-label="Quality management KPI cards">
-        <article class="metric accent-blue"><span id="metricEvals">0</span><label>Evaluations</label><small id="metricEvalsSub">Awaiting filters</small></article>
-        <article class="metric accent-green"><span id="metricAvg">-</span><label>Total score avg</label><small>Unique evaluation average</small></article>
-        <article class="metric accent-purple"><span id="metricCriticalAvg">-</span><label>Total critical score avg</label><small>Critical scoring health</small></article>
-        <article class="metric accent-cyan"><span id="metricAiAvg">-</span><label>AI evaluation score avg</label><small>System-submitted evals</small></article>
-        <article class="metric accent-orange"><span id="metricCritical">0</span><label>Critical failure evaluations</label><small>Unique evaluations</small></article>
-        <article class="metric accent-red"><span id="metricQuestionFailures">0</span><label>Failed critical questions</label><small>Question-level detail</small></article>
+        <article class="metric accent-blue"><span id="metricEvals">0</span><label>Evaluations</label></article>
+        <article class="metric accent-green"><span id="metricAvg">-</span><label>Total score avg</label></article>
+        <article class="metric accent-purple"><span id="metricCriticalAvg">-</span><label>Total critical score avg</label></article>
+        <article class="metric accent-cyan"><span id="metricAiAvg">-</span><label>AI evaluation score avg</label></article>
+        <article class="metric accent-orange"><span id="metricCritical">0</span><label>Critical failure evaluations</label></article>
+        <article class="metric accent-red"><span id="metricQuestionFailures">0</span><label>Failed critical questions</label></article>
       </section>
 
       <section class="dashboard-grid">
@@ -84,49 +75,60 @@
           <div class="section-heading">
             <div>
               <span class="eyebrow">Daily momentum</span>
-              <h2>Evaluation volume and scores</h2>
+              <h2>Trend over period</h2>
             </div>
           </div>
-          <div class="chart-shell"><canvas id="trendScoreChart"></canvas></div>
+          <div id="trendChart" class="trend-chart empty-state">Run the dashboard to see score trends.</div>
           <div id="trendTable" class="table-wrap compact-table"></div>
         </article>
 
         <article class="card">
-          <div class="section-heading"><div><span class="eyebrow">Risk trend</span><h2>Critical failures</h2></div></div>
-          <div class="chart-shell"><canvas id="criticalTrendChart"></canvas></div>
-        </article>
-
-        <article class="card">
-          <div class="section-heading"><div><span class="eyebrow">Forms</span><h2>Average and critical score by form</h2></div></div>
-          <div class="chart-shell"><canvas id="formPerformanceChart"></canvas></div>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Forms</span>
+              <h2>Average scores</h2>
+            </div>
+          </div>
           <div id="formSummary" class="table-wrap"></div>
         </article>
 
         <article class="card">
-          <div class="section-heading"><div><span class="eyebrow">Groups</span><h2>Lowest group scores</h2></div></div>
-          <div class="chart-shell"><canvas id="groupPerformanceChart"></canvas></div>
-          <div id="groupSummary" class="table-wrap"></div>
-        </article>
-
-        <article class="card">
-          <div class="section-heading"><div><span class="eyebrow">Coaching hotspots</span><h2>Underperforming questions</h2></div></div>
-          <div class="chart-shell tall"><canvas id="questionPerformanceChart"></canvas></div>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Coaching hotspots</span>
+              <h2>Underperforming questions</h2>
+            </div>
+          </div>
           <div id="questionSummary" class="table-wrap"></div>
         </article>
 
         <article class="card">
-          <div class="section-heading"><div><span class="eyebrow">People</span><h2>Agent / work team performance</h2></div></div>
-          <div id="agentTeamSummary" class="table-wrap"></div>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Groups</span>
+              <h2>Average scores</h2>
+            </div>
+          </div>
+          <div id="groupSummary" class="table-wrap"></div>
         </article>
 
         <article class="card">
-          <div class="section-heading"><div><span class="eyebrow">AI intelligence</span><h2>Human vs AI activity</h2></div></div>
-          <div class="chart-shell"><canvas id="aiScoringChart"></canvas></div>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">People</span>
+              <h2>Agent / work team performance</h2>
+            </div>
+          </div>
+          <div id="agentTeamSummary" class="table-wrap"></div>
         </article>
 
         <article class="card wide-card">
-          <div class="section-heading"><div><span class="eyebrow">Question intelligence</span><h2>Answer distribution</h2></div></div>
-          <div class="chart-shell"><canvas id="answerDistributionChart"></canvas></div>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Question intelligence</span>
+              <h2>Answer distribution</h2>
+            </div>
+          </div>
           <div id="answerSummary" class="table-wrap"></div>
         </article>
       </section>
@@ -152,18 +154,6 @@
     </div>
 
     <div class="drawer-content">
-      <div class="drawer-section">
-        <span class="drawer-label">Quick dates</span>
-        <div class="preset-grid">
-          <button class="preset-button" data-preset="today">Today</button>
-          <button class="preset-button" data-preset="yesterday">Yesterday</button>
-          <button class="preset-button" data-preset="7d">Previous 7 days</button>
-          <button class="preset-button" data-preset="30d">Previous 30 days</button>
-          <button class="preset-button" data-preset="thisMonth">This month</button>
-          <button class="preset-button" data-preset="lastMonth">Last month</button>
-        </div>
-      </div>
-
       <div class="drawer-grid">
         <label>Start date
           <input id="startDate" type="date" />
@@ -194,6 +184,9 @@
         <label>Queues
           <div id="queueFilter" class="multi-filter" data-placeholder="All queues"></div>
         </label>
+        <label>Queues
+          <select id="queueFilter" multiple size="5"></select>
+        </label>
         <label>Divisions
           <div id="divisionFilter" class="multi-filter" data-placeholder="All divisions"></div>
         </label>
@@ -202,13 +195,25 @@
         </label>
       </div>
 
-      <p class="note">Filters refresh the dashboard automatically. Use checkbox dropdowns to select one or more forms, agents, queues, divisions, or work teams.</p>
+      <label class="inline-check"><input id="autoRefresh" type="checkbox" checked /> Auto refresh on filter change</label>
+      <p class="note">Use Ctrl/Cmd-click to multi-select values. Clear a multi-select by deselecting all values.</p>
     </div>
 
     <div class="drawer-footer">
-      <button id="resetFiltersBtn" class="primary-button">Reset filters</button>
-      <button id="refreshMetadataBtn" class="secondary-button">Refresh lists</button>
-      <button id="clearCacheBtn" class="secondary-button">Clear cache</button>
+      <button id="applyFiltersBtn" class="primary-button">Apply & run</button>
+      <button id="refreshMetadataBtn" class="secondary-button">Refresh filter lists</button>
+      <button id="clearCacheBtn" class="secondary-button">Clear browser cache</button>
+    </div>
+  </aside>
+
+      <label class="inline-check"><input id="autoRefresh" type="checkbox" checked /> Auto refresh charts when filters change</label>
+      <p class="note">Use Ctrl/Cmd-click to multi-select values. Changing filters refreshes the dashboard automatically when auto refresh is on.</p>
+    </div>
+
+    <div class="drawer-footer">
+      <button id="applyFiltersBtn" class="primary-button">Apply filters</button>
+      <button id="refreshMetadataBtn" class="secondary-button">Refresh filter lists</button>
+      <button id="clearCacheBtn" class="secondary-button">Clear browser cache</button>
     </div>
   </aside>
 
