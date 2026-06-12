@@ -157,6 +157,27 @@ function toggleRegionPopover(show = null) {
   const shouldShow = show === null ? pop.classList.contains('hidden') : show;
   pop.classList.toggle('hidden', !shouldShow);
 }
+function clearOAuthAttempt() {
+  sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
+}
+function callbackCleanPath(saved = null) {
+  const redirectUri = saved?.redirectUri || oauthForRegion(state.region).redirectUri || `${window.location.origin}${window.location.pathname}`;
+  try {
+    const url = new URL(redirectUri, window.location.origin);
+    return `${url.pathname}${url.pathname.endsWith('/') ? '' : ''}` || window.location.pathname;
+  } catch {
+    return window.location.pathname;
+  }
+}
+function getOAuthCallbackParams() {
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get('code') || searchParams.get('error')) return searchParams;
+  const rawHash = window.location.hash.replace(/^#/, '');
+  const hashQuery = rawHash.includes('?') ? rawHash.slice(rawHash.indexOf('?') + 1) : rawHash;
+  const hashParams = new URLSearchParams(hashQuery);
+  return hashParams.get('code') || hashParams.get('error') ? hashParams : new URLSearchParams();
+}
 async function startLogin() {
   sessionStorage.removeItem(PKCE_KEY);
   localStorage.removeItem(PKCE_KEY);
@@ -203,7 +224,37 @@ async function handleAuthCallback() {
   if (!code) return;
   const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || localStorage.getItem(PKCE_KEY) || '{}');
   if (!saved.codeVerifier || params.get('state') !== saved.oauthState) {
-    throw new Error('OAuth state validation failed. Try signing in again.');
+    clearOAuthAttempt();
+    window.history.replaceState({}, document.title, callbackCleanPath(saved));
+    throw new Error('OAuth state validation failed. Click Sign in and try again.');
+  }
+  try {
+    const body = new URLSearchParams();
+    body.set('grant_type', 'authorization_code');
+    body.set('client_id', saved.clientId);
+    body.set('code', code);
+    body.set('redirect_uri', saved.redirectUri);
+    body.set('code_verifier', saved.codeVerifier);
+    const res = await fetch(`https://${loginHost(saved.cfg.region)}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    if (!res.ok) throw new Error(`Token exchange failed: ${res.status} ${await res.text()}`);
+    const token = await res.json();
+    token.expires_at = Date.now() + ((token.expires_in || 3600) * 1000) - 60000;
+    localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, region: saved.cfg.region }));
+    clearOAuthAttempt();
+    state.region = saved.cfg.region;
+    $('loginRegion').value = state.region;
+    window.history.replaceState({}, document.title, callbackCleanPath(saved));
+    state.token = token;
+    updateAuthUi();
+    return true;
+  } catch (e) {
+    clearOAuthAttempt();
+    window.history.replaceState({}, document.title, callbackCleanPath(saved));
+    throw e;
   }
   const body = new URLSearchParams();
   body.set('grant_type', 'authorization_code');
