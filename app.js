@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.4.2';
+const APP_VERSION = '0.4.3';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -698,17 +698,22 @@ function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 1
   const query = [
     { type: 'DATE_RANGE', field: 'submittedDate', startValue: `${cfg.startDate}T00:00:00.000Z`, endValue: `${cfg.endDate}T23:59:59.999Z`, operator: 'AND' },
   ];
-  const addTerms = (field, values) => {
-    if (values?.length) query.push({ type: 'TERMS', field, values, operator: 'AND' });
+  const addExact = (field, values) => {
+    const cleanValues = (values || []).filter(Boolean);
+    if (!cleanValues.length) return;
+    if (cleanValues.length > 1) {
+      throw new Error(`Quality search does not support multi-select filters for ${field}; using analytics detail fallback.`);
+    }
+    query.push({ type: 'EXACT', field, value: cleanValues[0], operator: 'AND' });
   };
-  addTerms('formId', cfg.formIds);
-  addTerms('agentId', cfg.agentIds);
-  addTerms('queueId', cfg.queueIds);
-  addTerms('divisionId', cfg.divisionIds);
-  addTerms('teamId', cfg.teamIds);
+  addExact('formId', cfg.formIds);
+  addExact('agentId', cfg.agentIds);
+  addExact('queueId', cfg.queueIds);
+  addExact('divisionId', cfg.divisionIds);
+  addExact('teamId', cfg.teamIds);
   if (cfg.sourceFilter === 'human') query.push({ type: 'EXACT', field: 'systemSubmitted', value: false, operator: 'AND' });
   if (cfg.sourceFilter === 'auto') query.push({ type: 'EXACT', field: 'systemSubmitted', value: true, operator: 'AND' });
-  query.push({ type: recordType === 'calibration' ? 'EXISTS' : 'NOT_EXISTS', field: 'calibrationId', operator: 'AND' });
+  if (recordType === 'calibration') query.push({ type: 'REQUIRED_FIELDS', fields: ['calibrationId'], operator: 'AND' });
   return {
     pageNumber,
     pageSize,
@@ -821,7 +826,13 @@ async function fetchQualitySearchSummaries(recordType) {
 }
 async function fetchRecordTypeDashboard(recordType) {
   setStatus(`Refreshing ${recordType} dashboard metrics...`);
-  return fetchQualitySearchSummaries(recordType);
+  try {
+    return await fetchQualitySearchSummaries(recordType);
+  } catch (e) {
+    console.warn('Quality evaluations search unavailable; using analytics detail fallback.', e);
+    setStatus(`Quality search was unavailable for ${recordType}; loading detail fallback...`);
+    return fetchRecordType(recordType);
+  }
 }
 async function fetchRecordType(recordType) {
   const cfg = getConfigFromUi();
