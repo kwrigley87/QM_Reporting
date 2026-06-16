@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.4.1';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -41,7 +41,7 @@ function selectedValues(id) {
 
 function setStatus(message) { $('status').textContent = message; }
 function setBusy(isBusy) {
-  ['refreshBtn', 'exportBtn', 'applyFiltersBtn'].forEach((id) => { if ($(id)) $(id).disabled = isBusy; });
+  ['exportBtn', 'resetFiltersBtn'].forEach((id) => { if ($(id)) $(id).disabled = isBusy; });
 }
 function today(offsetDays = 0) {
   const d = new Date(); d.setDate(d.getDate() + offsetDays);
@@ -95,13 +95,18 @@ function clearCache() {
   localStorage.removeItem(CACHE_KEY);
   state.cache = loadCache();
   state.metadataLoaded = false;
-  clearSelect('agentFilter', 'Sign in, then refresh filter lists');
-  clearSelect('formFilter', 'Forms will populate after refresh or first dashboard run');
-  clearSelect('divisionFilter', 'Sign in, then refresh filter lists');
-  clearSelect('teamFilter', 'Sign in, then refresh filter lists');
-  clearSelect('queueFilter', 'Sign in, then refresh filter lists');
+  populateFilterOptions(getConfigFromUi());
   updateActiveFilterChips();
-  setStatus('Browser cache cleared. Click Refresh filter lists or Run dashboard to retrieve fresh users, forms, queues, divisions, and teams.');
+  setStatus('Browser metadata cache cleared. Filter selections were kept; use Refresh lists to retrieve users, forms, queues, divisions, and teams again.');
+}
+function resetFilters() {
+  $('startDate').value = today(-7);
+  $('endDate').value = today(0);
+  $('sourceFilter').value = 'both';
+  $('recordFilter').value = 'evaluation';
+  ['formFilter', 'agentFilter', 'queueFilter', 'divisionFilter', 'teamFilter'].forEach(clearMultiFilterSelection);
+  updateActiveFilterChips();
+  debouncedRun();
 }
 function getConfigFromUi() {
   return {
@@ -115,7 +120,6 @@ function getConfigFromUi() {
     divisionIds: selectedValues('divisionFilter'),
     teamIds: selectedValues('teamFilter'),
     queueIds: selectedValues('queueFilter'),
-    autoRefresh: $('autoRefresh').checked,
   };
 }
 function hydrateUi() {
@@ -179,8 +183,7 @@ function getOAuthCallbackParams() {
   return hashParams.get('code') || hashParams.get('error') ? hashParams : new URLSearchParams();
 }
 async function startLogin() {
-  sessionStorage.removeItem(PKCE_KEY);
-  localStorage.removeItem(PKCE_KEY);
+  clearOAuthAttempt();
   $('regionHelp').textContent = 'Only regions with a configured OAuth client ID can sign in.';
   toggleRegionPopover(true);
 }
@@ -202,7 +205,7 @@ async function continueLogin() {
   const codeChallenge = await sha256Base64Url(codeVerifier);
   const oauthState = randomString(16);
   const redirectUri = oauth.redirectUri || `${window.location.origin}${window.location.pathname}`;
-  const pkcePayload = JSON.stringify({ codeVerifier, oauthState, cfg, clientId: oauth.clientId, redirectUri });
+  const pkcePayload = JSON.stringify({ codeVerifier, oauthState, cfg, clientId: oauth.clientId, redirectUri, createdAt: Date.now() });
   sessionStorage.setItem(PKCE_KEY, pkcePayload);
   localStorage.setItem(PKCE_KEY, pkcePayload);
   const authUrl = new URL(`https://${loginHost(region)}/oauth/authorize`);
@@ -215,13 +218,15 @@ async function continueLogin() {
   window.location.assign(authUrl.toString());
 }
 async function handleAuthCallback() {
-  const searchParams = new URLSearchParams(window.location.search);
-  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  const params = searchParams.get('code') ? searchParams : hashParams;
+  const params = getOAuthCallbackParams();
   const error = params.get('error');
-  if (error) throw new Error(`OAuth failed: ${error} ${params.get('error_description') || ''}`.trim());
+  if (error) {
+    clearOAuthAttempt();
+    window.history.replaceState({}, document.title, callbackCleanPath());
+    throw new Error(`OAuth failed: ${error} ${params.get('error_description') || ''}`.trim());
+  }
   const code = params.get('code');
-  if (!code) return;
+  if (!code) return false;
   const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || localStorage.getItem(PKCE_KEY) || '{}');
   if (!saved.codeVerifier || params.get('state') !== saved.oauthState) {
     clearOAuthAttempt();
@@ -256,28 +261,6 @@ async function handleAuthCallback() {
     window.history.replaceState({}, document.title, callbackCleanPath(saved));
     throw e;
   }
-  const body = new URLSearchParams();
-  body.set('grant_type', 'authorization_code');
-  body.set('client_id', saved.clientId);
-  body.set('code', code);
-  body.set('redirect_uri', saved.redirectUri);
-  body.set('code_verifier', saved.codeVerifier);
-  const res = await fetch(`https://${loginHost(saved.cfg.region)}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-  if (!res.ok) throw new Error(`Token exchange failed: ${res.status} ${await res.text()}`);
-  const token = await res.json();
-  token.expires_at = Date.now() + ((token.expires_in || 3600) * 1000) - 60000;
-  localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, region: saved.cfg.region }));
-  sessionStorage.removeItem(PKCE_KEY);
-  localStorage.removeItem(PKCE_KEY);
-  state.region = saved.cfg.region;
-  $('loginRegion').value = state.region;
-  window.history.replaceState({}, document.title, new URL(saved.redirectUri).pathname || '/');
-  state.token = token;
-  updateAuthUi();
 }
 function loadToken() {
   try {
@@ -292,13 +275,14 @@ function loadToken() {
 }
 function logout() {
   localStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(PKCE_KEY);
-  localStorage.removeItem(PKCE_KEY);
+  clearOAuthAttempt();
   state.token = null;
   state.rows = [];
   state.evaluations = [];
   state.evaluationSummaries = [];
   state.detailLoaded = false;
+  render();
+  setStatus('Signed out. Choose Sign in to reconnect to Genesys Cloud.');
   updateAuthUi();
 }
 function updateAuthUi() {
@@ -756,26 +740,26 @@ function normalizeSearchEvaluation(item, recordType) {
 async function fetchQualitySearchSummaries(recordType) {
   const cfg = getConfigFromUi();
   const first = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, 1, 100));
-  const pageCount = Math.min(first.pageCount || Math.ceil((first.total || 0) / 100) || 1, 10);
+  const pageCount = Math.min(first.pageCount || Math.ceil((first.total || 0) / 100) || 1, 50);
   const entities = unwrapSearchEntities(first);
   for (let page = 2; page <= pageCount; page++) {
     const data = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, page, 100));
     entities.push(...unwrapSearchEntities(data));
   }
   const summaries = entities.map((item) => normalizeSearchEvaluation(item, recordType)).filter(Boolean);
-  if (!summaries.length && !first.total && !first.aggregations) throw new Error('Quality search returned no dashboard records.');
+  if (!summaries.length && !first.total && !first.aggregations) throw new Error('No dashboard records were returned for the selected filters.');
   state.aggregateSearchResults = first;
   return { rows: [], evals: [], summaries, search: first };
 }
 async function fetchRecordTypeDashboard(recordType) {
   try {
-    setStatus(`Loading fast ${recordType} KPIs with quality evaluations search...`);
+    setStatus(`Refreshing ${recordType} dashboard metrics...`);
     const result = await fetchQualitySearchSummaries(recordType);
     if (result.summaries.length) return result;
   } catch (e) {
     console.warn('Quality evaluations search unavailable; falling back to detail path.', e);
   }
-  setStatus(`Quality search unavailable. Loading ${recordType} detail fallback...`);
+  setStatus(`Refreshing ${recordType} dashboard metrics...`);
   return fetchRecordType(recordType);
 }
 
@@ -977,24 +961,6 @@ function renderCriticalTrendChart(rows) {
     options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } },
   });
 }
-function renderTrendChart(rows) {
-  const chart = $('trendChart');
-  if (!rows.length) {
-    chart.className = 'trend-chart empty-state';
-    chart.textContent = 'No evaluations match the selected filters.';
-    return;
-  }
-  chart.className = 'trend-chart';
-  chart.innerHTML = rows.map((row) => {
-    const score = Math.max(0, Math.min(100, n(row.avg_total_score) ?? 0));
-    const label = row.date === 'Unknown' ? 'Unknown' : row.date.slice(5);
-    return `<div class="trend-bar" title="${htmlEscape(row.date)} average score ${htmlEscape(row.avg_total_score)}">
-      <div class="trend-bar-track"><div class="trend-bar-fill" style="height:${score}%"></div></div>
-      <strong>${htmlEscape(row.avg_total_score)}%</strong>
-      <small>${htmlEscape(label)} · ${htmlEscape(row.evaluations)} evals</small>
-    </div>`;
-  }).join('');
-}
 function renderFormSummary(evals) {
   const map = groupBy(evals, (e) => `${e.form_id}||${e.form_name || e.form_id || 'Unknown form'}`);
   const rows = [...map.entries()].map(([key, items]) => {
@@ -1016,7 +982,10 @@ function renderFormChart(rows) {
   if (!top.length) { renderEmptyChart('formPerformanceChart', 'No form performance data yet.'); return; }
   renderChart('formPerformanceChart', {
     type: 'bar',
-    data: { labels: top.map((r) => r.form), datasets: [{ label: 'Avg score', data: top.map((r) => n(r.avg_total_score)), backgroundColor: 'rgba(20, 184, 166, .72)' }] },
+    data: { labels: top.map((r) => r.form), datasets: [
+      { label: 'Avg score', data: top.map((r) => n(r.avg_total_score)), backgroundColor: 'rgba(20, 184, 166, .72)' },
+      { label: 'Avg critical score', data: top.map((r) => n(r.avg_critical_score)), backgroundColor: 'rgba(249, 115, 22, .68)' },
+    ] },
     options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true, max: 100 } } },
   });
 }
@@ -1031,12 +1000,12 @@ function renderGroupSummary() {
   return rows;
 }
 function renderGroupChart(rows) {
-  const top = rows.slice(0, 10).reverse();
+  const top = rows.slice(0, 10);
   if (!top.length) { renderEmptyChart('groupPerformanceChart', 'Load detail data to see group score hotspots.'); return; }
   renderChart('groupPerformanceChart', {
     type: 'bar',
     data: { labels: top.map((r) => r.group), datasets: [{ label: 'Avg group score', data: top.map((r) => n(r.avg_group_score)), backgroundColor: 'rgba(139, 92, 246, .72)' }] },
-    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true, max: 100 } } },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 }, x: { ticks: { maxRotation: 35, minRotation: 0 } } } },
   });
 }
 function renderQuestionSummary() {
@@ -1151,40 +1120,36 @@ function updateActiveFilterChips() {
     countSelectedLabel('queueFilter', 'queue'),
     countSelectedLabel('divisionFilter', 'division'),
     countSelectedLabel('teamFilter', 'team'),
-    cfg.autoRefresh ? 'Auto refresh on' : 'Manual refresh',
   ].filter(Boolean);
   chipHost.innerHTML = chips.map((chip) => `<span class="chip">${htmlEscape(chip)}</span>`).join('');
 }
 
-function countSelectedLabel(id, singular, plural = `${singular}s`) {
-  const values = selectedValues(id);
-  if (!values.length) return null;
-  return `${values.length} ${values.length === 1 ? singular : plural}`;
+function setDatePreset(preset) {
+  const now = new Date();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const startOfMonth = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  const endOfMonth = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+  let start = new Date(now), end = new Date(now);
+  if (preset === 'yesterday') { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
+  if (preset === '7d') start.setDate(start.getDate() - 6);
+  if (preset === '30d') start.setDate(start.getDate() - 29);
+  if (preset === 'thisMonth') { start = startOfMonth(now); end = now; }
+  if (preset === 'lastMonth') { const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)); start = startOfMonth(last); end = endOfMonth(last); }
+  $('startDate').value = iso(start);
+  $('endDate').value = iso(end);
+  updateActiveFilterChips();
+  debouncedRun();
 }
-function updateActiveFilterChips() {
-  const chipHost = $('activeFilterChips');
-  if (!chipHost) return;
-  const cfg = getConfigFromUi();
-  const sourceLabel = $('sourceFilter').selectedOptions[0]?.textContent || 'All sources';
-  const recordLabel = $('recordFilter').selectedOptions[0]?.textContent || 'Evaluations';
-  const chips = [
-    `${cfg.startDate || 'Any start'} → ${cfg.endDate || 'Any end'}`,
-    sourceLabel,
-    recordLabel,
-    countSelectedLabel('formFilter', 'form'),
-    countSelectedLabel('agentFilter', 'agent'),
-    countSelectedLabel('queueFilter', 'queue'),
-    countSelectedLabel('divisionFilter', 'division'),
-    countSelectedLabel('teamFilter', 'team'),
-    cfg.autoRefresh ? 'Auto refresh on' : 'Manual refresh',
-  ].filter(Boolean);
-  chipHost.innerHTML = chips.map((chip) => `<span class="chip">${htmlEscape(chip)}</span>`).join('');
+function wireDatePresets() {
+  document.querySelectorAll('[data-preset]').forEach((button) => button.addEventListener('click', () => setDatePreset(button.dataset.preset)));
 }
+
 function setFilterDrawerOpen(open) {
   const drawer = $('filterDrawer');
   const backdrop = $('drawerBackdrop');
   const button = $('filterDrawerBtn');
   drawer.classList.toggle('open', open);
+  document.body.classList.toggle('filters-open', open);
   drawer.setAttribute('aria-hidden', String(!open));
   backdrop.classList.toggle('hidden', !open);
   button.setAttribute('aria-expanded', String(open));
@@ -1193,17 +1158,15 @@ function wireDrawerControls() {
   $('filterDrawerBtn').addEventListener('click', () => setFilterDrawerOpen(true));
   $('closeFilterDrawerBtn').addEventListener('click', () => setFilterDrawerOpen(false));
   $('drawerBackdrop').addEventListener('click', () => setFilterDrawerOpen(false));
-  $('applyFiltersBtn').addEventListener('click', () => {
-    setFilterDrawerOpen(false);
-    runDashboard();
-  });
+  $('resetFiltersBtn').addEventListener('click', resetFilters);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') setFilterDrawerOpen(false);
   });
 }
 
-function exportCsv() {
-  if (!state.rows.length) { alert('Run the dashboard first.'); return; }
+async function exportCsv() {
+  if (!state.rows.length) await ensureDetailRowsLoaded();
+  if (!state.rows.length) { alert('No question-level detail is available for the selected filters.'); return; }
   const cols = Object.keys(state.rows[0]);
   const csv = [cols.join(',')].concat(state.rows.map((r) => cols.map((c) => {
     const v = String(r[c] ?? '');
@@ -1223,17 +1186,17 @@ async function init() {
   $('loginBtn').addEventListener('click', startLogin);
   $('continueLoginBtn').addEventListener('click', continueLogin);
   $('logoutBtn').addEventListener('click', logout);
-  $('refreshBtn').addEventListener('click', runDashboard);
   $('exportBtn').addEventListener('click', exportCsv);
-  $('refreshMetadataBtn').addEventListener('click', () => refreshMetadata(true));
-  $('clearCacheBtn').addEventListener('click', clearCache);
   wireDrawerControls();
-  ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','queueFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', debouncedRun));
-  ['startDate','endDate','sourceFilter','recordFilter','formFilter','agentFilter','queueFilter','divisionFilter','teamFilter','autoRefresh'].forEach((id) => $(id).addEventListener('change', updateActiveFilterChips));
+  wireDatePresets();
+  document.addEventListener('click', closeMultiFiltersOnOutsideClick);
+  ['startDate','endDate','sourceFilter','recordFilter'].forEach((id) => $(id).addEventListener('change', debouncedRun));
+  ['startDate','endDate','sourceFilter','recordFilter'].forEach((id) => $(id).addEventListener('change', updateActiveFilterChips));
   try { await handleAuthCallback(); } catch (e) { console.error(e); alert(e.message); }
   loadToken();
   if (state.token?.access_token) refreshMetadata(false).catch((e) => console.warn(e));
   updateActiveFilterChips();
+  render();
   setStatus(`Ready. App version ${APP_VERSION}.`);
 }
 init();
