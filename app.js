@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.4.2';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -24,6 +24,7 @@ let state = {
   evaluations: [],
   evaluationSummaries: [],
   aggregateSearchResults: null,
+  searchRows: [],
   detailLoaded: false,
   charts: {},
   cache: loadCache(),
@@ -32,11 +33,16 @@ let state = {
 };
 
 const $ = (id) => document.getElementById(id);
+function splitOptionValue(value) {
+  return String(value || '').split('|').map((v) => v.trim()).filter(Boolean);
+}
 function selectedValues(id) {
   const el = $(id);
   if (!el) return [];
-  if (el.tagName === 'SELECT') return Array.from(el.selectedOptions || []).map((o) => o.value).filter(Boolean);
-  return Array.from(el.querySelectorAll('input[type=checkbox]:checked')).map((o) => o.value).filter(Boolean);
+  const values = el.tagName === 'SELECT'
+    ? Array.from(el.selectedOptions || []).flatMap((o) => splitOptionValue(o.value))
+    : Array.from(el.querySelectorAll('input[type=checkbox]:checked')).flatMap((o) => splitOptionValue(o.value));
+  return [...new Set(values)].filter(Boolean);
 }
 
 function setStatus(message) { $('status').textContent = message; }
@@ -280,6 +286,7 @@ function logout() {
   state.rows = [];
   state.evaluations = [];
   state.evaluationSummaries = [];
+  state.searchRows = [];
   state.detailLoaded = false;
   render();
   setStatus('Signed out. Choose Sign in to reconnect to Genesys Cloud.');
@@ -332,22 +339,31 @@ async function fetchAllPages(path, key = 'entities', pageSize = 100) {
   }
   return all;
 }
+function optionValues(item) {
+  return Array.isArray(item.ids) && item.ids.length ? item.ids : splitOptionValue(item.value || item.id);
+}
+function optionValue(item) {
+  return optionValues(item).join('|');
+}
+function isOptionSelected(item, selectedSet) {
+  return optionValues(item).some((id) => selectedSet.has(id));
+}
 function setOptions(id, items, selected = []) {
   const el = $(id);
   const selectedSet = new Set(selected);
   const placeholder = el.dataset.placeholder || 'Select values';
   if (el.tagName === 'SELECT') {
-    el.innerHTML = items.map((x) => `<option value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' selected' : ''}>${htmlEscape(x.name || x.email || x.id)}</option>`).join('');
+    el.innerHTML = items.map((x) => `<option value="${htmlEscape(optionValue(x))}"${isOptionSelected(x, selectedSet) ? ' selected' : ''}>${htmlEscape(x.name || x.email || x.id)}</option>`).join('');
     return;
   }
-  const selectedCount = items.filter((x) => selectedSet.has(x.id)).length;
+  const selectedCount = items.filter((x) => isOptionSelected(x, selectedSet)).length;
   const summary = selectedCount ? `${selectedCount} selected` : placeholder;
   el.innerHTML = `<button type="button" class="multi-filter-button" aria-expanded="false">${htmlEscape(summary)}</button>
     <div class="multi-filter-menu hidden">
       <label class="multi-filter-search">Search <input type="search" placeholder="Filter options" /></label>
       <div class="multi-filter-options">${items.length ? items.map((x) => {
         const label = x.name || x.email || x.id;
-        return `<label class="check-row"><input type="checkbox" value="${htmlEscape(x.id)}"${selectedSet.has(x.id) ? ' checked' : ''} /> <span>${htmlEscape(label)}</span></label>`;
+        return `<label class="check-row"><input type="checkbox" value="${htmlEscape(optionValue(x))}"${isOptionSelected(x, selectedSet) ? ' checked' : ''} /> <span>${htmlEscape(label)}</span></label>`;
       }).join('') : `<p class="note">${htmlEscape(placeholder)}</p>`}</div>
       <button type="button" class="link-button clear-filter-button">Clear selected</button>
     </div>`;
@@ -427,7 +443,7 @@ async function refreshMetadata(force = false) {
     } catch (e) { console.warn('Queue list failed', e); }
     try {
       const forms = await fetchAllPages('/api/v2/quality/publishedforms/evaluations', 'entities', 100);
-      state.cache.formList = forms.map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id }));
+      state.cache.formList = forms.map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id, modifiedDate: f.modifiedDate || f.version?.date || f.createdDate || '' }));
     } catch (e) { console.warn('Published form list failed; forms will populate from evaluations', e); }
     state.cache.metadataAt = now;
     saveCache();
@@ -443,7 +459,16 @@ function populateFilterOptions(cfg = loadConfig()) {
   setOptions('queueFilter', (state.cache.queueList || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')), cfg.queueIds || []);
   const fromDetails = Object.values(state.cache.forms || {}).map((x) => x.data).filter(Boolean).map((f) => ({ id: f.id, name: f.name || f.context?.name || f.id }));
   const forms = [...(state.cache.formList || []), ...fromDetails];
-  const uniqueForms = [...new Map(forms.map((f) => [f.id, f])).values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const formsByName = new Map();
+  for (const form of forms) {
+    if (!form?.id) continue;
+    const name = form.name || form.context?.name || form.id;
+    const key = name.trim().toLowerCase();
+    if (!formsByName.has(key)) formsByName.set(key, { id: form.id, ids: [], name });
+    const grouped = formsByName.get(key);
+    if (!grouped.ids.includes(form.id)) grouped.ids.push(form.id);
+  }
+  const uniqueForms = [...formsByName.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   setOptions('formFilter', uniqueForms, cfg.formIds || []);
 }
 async function getUser(userId) {
@@ -705,6 +730,41 @@ function unwrapSearchEntities(data) {
   const items = roots[0] || [];
   return items.map((item) => item.document || item.entity || item.evaluation || item).filter(Boolean);
 }
+function normalizeSearchQuestionRow(item, summary) {
+  const question = item.question || item.evaluationQuestion || {};
+  const group = item.questionGroup || item.evaluationQuestionGroup || {};
+  const answer = item.answer || item.selectedAnswer || {};
+  const questionId = item.questionId || question.id || item.evaluationQuestionId || '';
+  const groupId = item.questionGroupId || group.id || item.evaluationQuestionGroupId || '';
+  if (!questionId && !groupId && !item.questionText && !item.questionGroupName) return null;
+  return {
+    evaluation_id: summary.evaluation_id,
+    conversation_id: summary.conversation_id,
+    evaluation_form_id: summary.form_id,
+    evaluation_form_name: summary.form_name || summary.form_id || 'Unknown form',
+    agent_id: summary.agent_id,
+    agent_name: summary.agent_name,
+    queue_id: summary.queue_id,
+    queue_name: summary.queue_name,
+    team_id: summary.team_id,
+    team_name: summary.team_name,
+    division_id: summary.division_id,
+    division_name: summary.division_name,
+    submitted_date: summary.submitted_date,
+    question_group_id: groupId,
+    question_group_name: item.questionGroupName || group.name || item.groupName || 'Unknown group',
+    question_group_score: item.questionGroupScore ?? group.score ?? item.groupScore ?? '',
+    question_id: questionId,
+    question_text: item.questionText || question.text || question.name || '',
+    question_score: item.questionScore ?? question.score ?? '',
+    question_is_critical: item.questionIsCritical ?? question.isCritical ?? false,
+    failed_kill_question: item.failedKillQuestion === true || item.anyFailedKillQuestions === true,
+    answer_id: item.answerId || answer.id || '',
+    answer_text: item.answerText || answer.text || answer.name || '',
+    ai_answer_overridden: String(item.aiAnswerOverridden ?? item.aiAnswer?.overridden ?? ''),
+    ai_answer_matches_final: String(item.aiAnswerMatchesFinal ?? item.aiAnswer?.matchesFinal ?? ''),
+  };
+}
 function normalizeSearchEvaluation(item, recordType) {
   const form = item.evaluationForm || item.form || {};
   const agent = item.agent || item.agentUser || {};
@@ -747,22 +807,22 @@ async function fetchQualitySearchSummaries(recordType) {
     entities.push(...unwrapSearchEntities(data));
   }
   const summaries = entities.map((item) => normalizeSearchEvaluation(item, recordType)).filter(Boolean);
-  if (!summaries.length && !first.total && !first.aggregations) throw new Error('No dashboard records were returned for the selected filters.');
+  const summaryById = new Map(summaries.map((summary) => [summary.evaluation_id, summary]));
+  const searchRows = entities
+    .map((item) => {
+      const evaluationId = item.evaluationId || item.id;
+      const summary = summaryById.get(evaluationId) || normalizeSearchEvaluation(item, recordType);
+      return summary ? normalizeSearchQuestionRow(item, summary) : null;
+    })
+    .filter(Boolean);
+  if (!summaries.length && !searchRows.length && !first.total && !first.aggregations) throw new Error('No dashboard records were returned for the selected filters.');
   state.aggregateSearchResults = first;
-  return { rows: [], evals: [], summaries, search: first };
+  return { rows: [], evals: [], summaries, searchRows, search: first };
 }
 async function fetchRecordTypeDashboard(recordType) {
-  try {
-    setStatus(`Refreshing ${recordType} dashboard metrics...`);
-    const result = await fetchQualitySearchSummaries(recordType);
-    if (result.summaries.length) return result;
-  } catch (e) {
-    console.warn('Quality evaluations search unavailable; falling back to detail path.', e);
-  }
   setStatus(`Refreshing ${recordType} dashboard metrics...`);
-  return fetchRecordType(recordType);
+  return fetchQualitySearchSummaries(recordType);
 }
-
 async function fetchRecordType(recordType) {
   const cfg = getConfigFromUi();
   const query = buildAggregateQuery(cfg.startDate, cfg.endDate, recordType, cfg.sourceFilter, cfg);
@@ -806,6 +866,7 @@ async function runDashboard() {
     state.rows = [];
     state.evaluations = [];
     state.evaluationSummaries = [];
+    state.searchRows = [];
     state.detailLoaded = false;
     const types = cfg.recordFilter === 'both' ? ['evaluation', 'calibration'] : [cfg.recordFilter];
     for (const t of types) {
@@ -813,10 +874,11 @@ async function runDashboard() {
       state.rows.push(...result.rows);
       state.evaluations.push(...result.evals);
       state.evaluationSummaries.push(...result.summaries);
+      state.searchRows.push(...(result.searchRows || []));
       if (result.rows.length) state.detailLoaded = true;
     }
     render();
-    const detailText = state.detailLoaded ? `${state.rows.length} question rows loaded.` : 'Question-level detail will load on download/drilldown.';
+    const detailText = state.detailLoaded ? `${state.rows.length} question rows loaded.` : `${state.searchRows.length} search-level question/group rows available; full detail loads on download.`;
     setStatus(`Dashboard refreshed. ${uniqueEvalSummaries().length} unique evaluations loaded. ${detailText}`);
   } catch (err) {
     console.error(err);
@@ -836,6 +898,7 @@ async function ensureDetailRowsLoaded() {
     state.rows = [];
     state.evaluations = [];
     state.evaluationSummaries = [];
+    state.searchRows = [];
     const types = cfg.recordFilter === 'both' ? ['evaluation', 'calibration'] : [cfg.recordFilter];
     for (const t of types) {
       setStatus(`Loading ${t} question-level detail for export...`);
@@ -843,6 +906,7 @@ async function ensureDetailRowsLoaded() {
       state.rows.push(...result.rows);
       state.evaluations.push(...result.evals);
       state.evaluationSummaries.push(...result.summaries);
+      state.searchRows.push(...(result.searchRows || []));
     }
     state.detailLoaded = true;
     render();
@@ -990,13 +1054,14 @@ function renderFormChart(rows) {
   });
 }
 function renderGroupSummary() {
-  const groupRows = [...new Map(state.rows.map((r) => [`${r.evaluation_id}||${r.question_group_id}`, r])).values()];
+  const sourceRows = state.detailLoaded && state.rows.length ? state.rows : state.searchRows;
+  const groupRows = [...new Map(sourceRows.map((r) => [`${r.evaluation_id}||${r.question_group_id}`, r])).values()];
   const map = groupBy(groupRows, (r) => `${r.evaluation_form_name}||${r.question_group_name || 'Unknown group'}`);
   const rows = [...map.entries()].map(([key, items]) => {
     const [form, group] = key.split('||');
     return { form, group, evaluations: items.length, avg_group_score: fmt(avg(items.map((r) => r.question_group_score)), 1) };
   }).sort((a, b) => Number(a.avg_group_score) - Number(b.avg_group_score));
-  $('groupSummary').innerHTML = state.detailLoaded ? makeTable(rows) : '<p class="note">Question group detail loads when detail data is requested.</p>';
+  $('groupSummary').innerHTML = rows.length ? makeTable(rows) : '<p class="note">No question group scores returned for the selected filters.</p>';
   return rows;
 }
 function renderGroupChart(rows) {
@@ -1009,7 +1074,8 @@ function renderGroupChart(rows) {
   });
 }
 function renderQuestionSummary() {
-  const map = groupBy(state.rows, (r) => `${r.evaluation_form_name}||${r.question_group_name}||${r.question_id}||${r.question_text}`);
+  const sourceRows = state.detailLoaded && state.rows.length ? state.rows : state.searchRows;
+  const map = groupBy(sourceRows.filter((r) => r.question_id || r.question_text), (r) => `${r.evaluation_form_name}||${r.question_group_name}||${r.question_id}||${r.question_text}`);
   const rows = [...map.entries()].map(([key, items]) => {
     const [form, group, , question] = key.split('||');
     return {
@@ -1024,7 +1090,7 @@ function renderQuestionSummary() {
       ai_overrides: items.filter((r) => r.ai_answer_overridden === 'true').length,
     };
   }).sort((a, b) => Number(a.avg_question_score) - Number(b.avg_question_score)).slice(0, 100);
-  $('questionSummary').innerHTML = state.detailLoaded ? makeTable(rows) : '<p class="note">Question detail is loaded on demand for export or drilldown.</p>';
+  $('questionSummary').innerHTML = rows.length ? makeTable(rows) : '<p class="note">No question scores returned for the selected filters.</p>';
   return rows;
 }
 function renderQuestionChart(rows) {
@@ -1052,13 +1118,14 @@ function renderAgentTeamSummary(evals) {
   $('agentTeamSummary').innerHTML = makeTable(rows);
 }
 function renderAnswerSummary() {
-  const answerable = state.rows.filter((r) => r.question_text && r.answer_text);
+  const sourceRows = state.detailLoaded && state.rows.length ? state.rows : state.searchRows;
+  const answerable = sourceRows.filter((r) => r.question_text && r.answer_text);
   const map = groupBy(answerable, (r) => `${r.evaluation_form_name}||${r.question_text}||${r.answer_text}`);
   const rows = [...map.entries()].map(([key, items]) => {
     const [form, question, answer] = key.split('||');
     return { form, question, answer, count: items.length, avg_question_score: fmt(avg(items.map((r) => r.question_score)), 1) };
   }).sort((a, b) => Number(b.count) - Number(a.count)).slice(0, 150);
-  $('answerSummary').innerHTML = state.detailLoaded ? makeTable(rows) : '<p class="note">Answer distribution loads with question-level detail.</p>';
+  $('answerSummary').innerHTML = rows.length ? makeTable(rows) : '<p class="note">No answer distribution returned for the selected filters.</p>';
   return rows;
 }
 function renderAnswerChart(rows) {
@@ -1073,10 +1140,11 @@ function renderAnswerChart(rows) {
 function renderAiChart(evals) {
   const automated = evals.filter((e) => e.system_submitted).length;
   const human = Math.max(0, evals.length - automated);
-  const overrides = state.rows.filter((r) => r.ai_answer_overridden === 'true').length;
-  const accepted = state.rows.filter((r) => r.ai_answer_matches_final === 'true').length;
-  const labels = state.detailLoaded && (accepted || overrides) ? ['AI accepted', 'AI overridden'] : ['Human submitted', 'System submitted'];
-  const values = state.detailLoaded && (accepted || overrides) ? [accepted, overrides] : [human, automated];
+  const aiRows = state.detailLoaded && state.rows.length ? state.rows : state.searchRows;
+  const overrides = aiRows.filter((r) => r.ai_answer_overridden === 'true').length;
+  const accepted = aiRows.filter((r) => r.ai_answer_matches_final === 'true').length;
+  const labels = (accepted || overrides) ? ['AI accepted', 'AI overridden'] : ['Human submitted', 'System submitted'];
+  const values = (accepted || overrides) ? [accepted, overrides] : [human, automated];
   if (!evals.length && !values.some(Boolean)) { renderEmptyChart('aiScoringChart', 'AI and human evaluation mix appears after refresh.'); return; }
   renderChart('aiScoringChart', {
     type: 'doughnut',

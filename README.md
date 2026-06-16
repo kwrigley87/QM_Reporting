@@ -24,7 +24,7 @@ Future phases should add richer charts, saved report presets, queue/division sec
 
 ## Data strategy
 
-The dashboard uses an aggregate-first flow so filter changes can refresh KPIs and charts quickly. It attempts `POST /api/v2/quality/evaluations/search` for quality evaluation search metrics, keeps `POST /api/v2/analytics/evaluations/aggregates/query` for evaluation ID/time-series fallback behavior, and only expands full question-level rows when the user requests a detailed CSV export or the search API is unavailable. Evaluation-level measures are calculated from unique evaluation IDs so question rows do not inflate counts or averages.
+The dashboard uses `POST /api/v2/quality/evaluations/search` for filter-driven KPI and chart refreshes. It sends selected form, agent, queue, division, and team IDs in the search request body, uses returned search-level form/group/question/answer fields where available, and only expands full question-level detail rows when the user requests a detailed CSV export. Evaluation-level measures are calculated from unique evaluation IDs so question rows do not inflate counts or averages.
 
 ## Genesys setup
 
