@@ -1,7 +1,7 @@
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
-const APP_VERSION = '0.4.3';
+const APP_VERSION = '0.4.4';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -694,35 +694,32 @@ async function fetchEvaluationDetail(conversationId, evaluationId) {
   return evaluation;
 }
 
-function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 100) {
+function selectedSearchCombinations(cfg) {
+  const fields = [
+    ['evaluationFormId', cfg.formIds || []],
+    ['userId', cfg.agentIds || []],
+    ['queueId', cfg.queueIds || []],
+    ['divisionId', cfg.divisionIds || []],
+    ['teamId', cfg.teamIds || []],
+  ].filter(([, values]) => values.length);
+  if (!fields.length) return [{}];
+  return fields.reduce((combos, [field, values]) => combos.flatMap((combo) => values.map((value) => ({ ...combo, [field]: value }))), [{}]).slice(0, 75);
+}
+function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 100, exactFilters = {}) {
   const query = [
     { type: 'DATE_RANGE', field: 'submittedDate', startValue: `${cfg.startDate}T00:00:00.000Z`, endValue: `${cfg.endDate}T23:59:59.999Z`, operator: 'AND' },
   ];
-  const addTerms = (field, values) => {
-    if (values?.length) query.push({ type: 'TERMS', field, values, operator: 'AND' });
+  const addExact = (field, value) => {
+    if (value) query.push({ type: 'EXACT', field, value, operator: 'AND' });
   };
-  addTerms('evaluationFormId', cfg.formIds);
-  addTerms('userId', cfg.agentIds);
-  addTerms('queueId', cfg.queueIds);
-  addTerms('divisionId', cfg.divisionIds);
-  addTerms('teamId', cfg.teamIds);
+  for (const [field, value] of Object.entries(exactFilters)) addExact(field, value);
   if (cfg.sourceFilter === 'human') query.push({ type: 'EXACT', field: 'systemSubmitted', value: false, operator: 'AND' });
   if (cfg.sourceFilter === 'auto') query.push({ type: 'EXACT', field: 'systemSubmitted', value: true, operator: 'AND' });
-  query.push({ type: recordType === 'calibration' ? 'EXISTS' : 'NOT_EXISTS', field: 'calibrationId', operator: 'AND' });
   return {
     pageNumber,
     pageSize,
     query,
     sort: [{ field: 'submittedDate', order: 'desc' }],
-    aggregations: [
-      { name: 'avgTotalScore', field: 'totalScore', type: 'AVERAGE' },
-      { name: 'avgCriticalScore', field: 'totalCriticalScore', type: 'AVERAGE' },
-      { name: 'totalScoreStats', field: 'totalScore', type: 'STATS' },
-      { name: 'byForm', field: 'evaluationFormId', type: 'TERMS' },
-      { name: 'byQuestionGroup', field: 'questionGroupId', type: 'TERMS' },
-      { name: 'byQuestion', field: 'questionId', type: 'TERMS' },
-      { name: 'byAnswer', field: 'answerId', type: 'TERMS' },
-    ],
   };
 }
 function unwrapSearchEntities(data) {
@@ -778,6 +775,7 @@ function normalizeSearchEvaluation(item, recordType) {
     evaluation_id: evaluationId,
     export_record_type: recordType,
     conversation_id: item.conversationId || item.conversation?.id || '',
+    calibration_id: item.calibrationId || item.calibration?.id || '',
     form_id: item.evaluationFormId || item.formId || form.id || '',
     form_name: item.formName || form.name || '',
     agent_id: item.userId || item.agentId || agent.id || '',
@@ -799,25 +797,42 @@ function normalizeSearchEvaluation(item, recordType) {
 }
 async function fetchQualitySearchSummaries(recordType) {
   const cfg = getConfigFromUi();
-  const first = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, 1, 100));
-  const pageCount = Math.min(first.pageCount || Math.ceil((first.total || 0) / 100) || 1, 50);
-  const entities = unwrapSearchEntities(first);
-  for (let page = 2; page <= pageCount; page++) {
-    const data = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, page, 100));
-    entities.push(...unwrapSearchEntities(data));
+  const combinations = selectedSearchCombinations(cfg);
+  const entityMap = new Map();
+  let firstSearch = null;
+  for (const exactFilters of combinations) {
+    const first = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, 1, 100, exactFilters));
+    if (!firstSearch) firstSearch = first;
+    const pageCount = Math.min(first.pageCount || Math.ceil((first.total || 0) / 100) || 1, 50);
+    const pages = [first];
+    for (let page = 2; page <= pageCount; page++) {
+      pages.push(await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, page, 100, exactFilters)));
+    }
+    for (const page of pages) {
+      for (const entity of unwrapSearchEntities(page)) {
+        const key = [entity.evaluationId || entity.id || entity.conversationId || '', entity.questionGroupId || '', entity.questionId || '', entity.answerId || '', JSON.stringify(entity).slice(0, 120)].join('|');
+        entityMap.set(key, entity);
+      }
+    }
   }
-  const summaries = entities.map((item) => normalizeSearchEvaluation(item, recordType)).filter(Boolean);
+  const entities = [...entityMap.values()];
+  const summaries = entities
+    .map((item) => normalizeSearchEvaluation(item, recordType))
+    .filter(Boolean)
+    .filter((summary) => recordType === 'calibration' ? !!summary.calibration_id : !summary.calibration_id);
+  const summaryIds = new Set(summaries.map((summary) => summary.evaluation_id));
   const summaryById = new Map(summaries.map((summary) => [summary.evaluation_id, summary]));
   const searchRows = entities
     .map((item) => {
       const evaluationId = item.evaluationId || item.id;
+      if (!summaryIds.has(evaluationId)) return null;
       const summary = summaryById.get(evaluationId) || normalizeSearchEvaluation(item, recordType);
       return summary ? normalizeSearchQuestionRow(item, summary) : null;
     })
     .filter(Boolean);
-  if (!summaries.length && !searchRows.length && !first.total && !first.aggregations) throw new Error('No dashboard records were returned for the selected filters.');
-  state.aggregateSearchResults = first;
-  return { rows: [], evals: [], summaries, searchRows, search: first };
+  if (!summaries.length && !searchRows.length && !firstSearch?.total && !firstSearch?.aggregations) throw new Error('No dashboard records were returned for the selected filters.');
+  state.aggregateSearchResults = firstSearch;
+  return { rows: [], evals: [], summaries, searchRows, search: firstSearch };
 }
 async function fetchRecordTypeDashboard(recordType) {
   setStatus(`Refreshing ${recordType} dashboard metrics...`);
