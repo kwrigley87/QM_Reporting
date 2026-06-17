@@ -500,7 +500,7 @@ function buildAggregateQuery(startDate, endDate, recordType, sourceFilter, cfg) 
   const clauses = [{ type: 'or', predicates: [{ dimension: 'calibrationId', operator: calibrationOperator }] }];
   if (sourceFilter === 'human') clauses.push({ type: 'or', predicates: [{ dimension: 'systemSubmitted', value: 'false' }] });
   if (sourceFilter === 'auto') clauses.push({ type: 'or', predicates: [{ dimension: 'systemSubmitted', value: 'true' }] });
-  if (cfg.agentIds?.length) clauses.push({ type: 'or', predicates: cfg.agentIds.map((value) => ({ dimension: 'agentId', value })) });
+  if (cfg.agentIds?.length) clauses.push({ type: 'or', predicates: cfg.agentIds.map((value) => ({ dimension: 'userId', value })) });
   if (cfg.formIds?.length) clauses.push({ type: 'or', predicates: cfg.formIds.map((value) => ({ dimension: 'evaluationFormId', value })) });
   if (cfg.queueIds?.length) clauses.push({ type: 'or', predicates: cfg.queueIds.map((value) => ({ dimension: 'queueId', value })) });
   return {
@@ -698,22 +698,17 @@ function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 1
   const query = [
     { type: 'DATE_RANGE', field: 'submittedDate', startValue: `${cfg.startDate}T00:00:00.000Z`, endValue: `${cfg.endDate}T23:59:59.999Z`, operator: 'AND' },
   ];
-  const addExact = (field, values) => {
-    const cleanValues = (values || []).filter(Boolean);
-    if (!cleanValues.length) return;
-    if (cleanValues.length > 1) {
-      throw new Error(`Quality search does not support multi-select filters for ${field}; using analytics detail fallback.`);
-    }
-    query.push({ type: 'EXACT', field, value: cleanValues[0], operator: 'AND' });
+  const addTerms = (field, values) => {
+    if (values?.length) query.push({ type: 'TERMS', field, values, operator: 'AND' });
   };
-  addExact('formId', cfg.formIds);
-  addExact('agentId', cfg.agentIds);
-  addExact('queueId', cfg.queueIds);
-  addExact('divisionId', cfg.divisionIds);
-  addExact('teamId', cfg.teamIds);
+  addTerms('evaluationFormId', cfg.formIds);
+  addTerms('userId', cfg.agentIds);
+  addTerms('queueId', cfg.queueIds);
+  addTerms('divisionId', cfg.divisionIds);
+  addTerms('teamId', cfg.teamIds);
   if (cfg.sourceFilter === 'human') query.push({ type: 'EXACT', field: 'systemSubmitted', value: false, operator: 'AND' });
   if (cfg.sourceFilter === 'auto') query.push({ type: 'EXACT', field: 'systemSubmitted', value: true, operator: 'AND' });
-  if (recordType === 'calibration') query.push({ type: 'REQUIRED_FIELDS', fields: ['calibrationId'], operator: 'AND' });
+  query.push({ type: recordType === 'calibration' ? 'EXISTS' : 'NOT_EXISTS', field: 'calibrationId', operator: 'AND' });
   return {
     pageNumber,
     pageSize,
@@ -723,7 +718,7 @@ function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 1
       { name: 'avgTotalScore', field: 'totalScore', type: 'AVERAGE' },
       { name: 'avgCriticalScore', field: 'totalCriticalScore', type: 'AVERAGE' },
       { name: 'totalScoreStats', field: 'totalScore', type: 'STATS' },
-      { name: 'byForm', field: 'formId', type: 'TERMS' },
+      { name: 'byForm', field: 'evaluationFormId', type: 'TERMS' },
       { name: 'byQuestionGroup', field: 'questionGroupId', type: 'TERMS' },
       { name: 'byQuestion', field: 'questionId', type: 'TERMS' },
       { name: 'byAnswer', field: 'answerId', type: 'TERMS' },
@@ -783,9 +778,9 @@ function normalizeSearchEvaluation(item, recordType) {
     evaluation_id: evaluationId,
     export_record_type: recordType,
     conversation_id: item.conversationId || item.conversation?.id || '',
-    form_id: item.formId || form.id || item.evaluationFormId || '',
+    form_id: item.evaluationFormId || item.formId || form.id || '',
     form_name: item.formName || form.name || '',
-    agent_id: item.agentId || agent.id || '',
+    agent_id: item.userId || item.agentId || agent.id || '',
     agent_name: item.agentName || agent.name || '',
     queue_id: item.queueId || queue.id || '',
     queue_name: item.queueName || queue.name || '',
@@ -826,13 +821,7 @@ async function fetchQualitySearchSummaries(recordType) {
 }
 async function fetchRecordTypeDashboard(recordType) {
   setStatus(`Refreshing ${recordType} dashboard metrics...`);
-  try {
-    return await fetchQualitySearchSummaries(recordType);
-  } catch (e) {
-    console.warn('Quality evaluations search unavailable; using analytics detail fallback.', e);
-    setStatus(`Quality search was unavailable for ${recordType}; loading detail fallback...`);
-    return fetchRecordType(recordType);
-  }
+  return fetchQualitySearchSummaries(recordType);
 }
 async function fetchRecordType(recordType) {
   const cfg = getConfigFromUi();
@@ -1071,13 +1060,13 @@ function renderGroupSummary() {
   const rows = [...map.entries()].map(([key, items]) => {
     const [form, group] = key.split('||');
     return { form, group, evaluations: items.length, avg_group_score: fmt(avg(items.map((r) => r.question_group_score)), 1) };
-  }).sort((a, b) => Number(a.avg_group_score) - Number(b.avg_group_score));
+  }).sort((a, b) => Number(b.evaluations) - Number(a.evaluations) || Number(b.avg_group_score) - Number(a.avg_group_score));
   $('groupSummary').innerHTML = rows.length ? makeTable(rows) : '<p class="note">No question group scores returned for the selected filters.</p>';
   return rows;
 }
 function renderGroupChart(rows) {
-  const top = rows.slice(0, 10);
-  if (!top.length) { renderEmptyChart('groupPerformanceChart', 'Load detail data to see group score hotspots.'); return; }
+  const top = rows.slice(0, 12);
+  if (!top.length) { renderEmptyChart('groupPerformanceChart', 'No group performance returned for the selected filters.'); return; }
   renderChart('groupPerformanceChart', {
     type: 'bar',
     data: { labels: top.map((r) => r.group), datasets: [{ label: 'Avg group score', data: top.map((r) => n(r.avg_group_score)), backgroundColor: 'rgba(139, 92, 246, .72)' }] },
@@ -1100,13 +1089,13 @@ function renderQuestionSummary() {
       failed_critical_questions: items.filter((r) => r.failed_kill_question === true || (r.question_is_critical === true && n(r.question_score) === 0)).length,
       ai_overrides: items.filter((r) => r.ai_answer_overridden === 'true').length,
     };
-  }).sort((a, b) => Number(a.avg_question_score) - Number(b.avg_question_score)).slice(0, 100);
+  }).sort((a, b) => Number(b.answered_rows) - Number(a.answered_rows) || Number(b.avg_question_score) - Number(a.avg_question_score)).slice(0, 100);
   $('questionSummary').innerHTML = rows.length ? makeTable(rows) : '<p class="note">No question scores returned for the selected filters.</p>';
   return rows;
 }
 function renderQuestionChart(rows) {
   const top = rows.slice(0, 10).reverse();
-  if (!top.length) { renderEmptyChart('questionPerformanceChart', 'Load detail data to see underperforming questions.'); return; }
+  if (!top.length) { renderEmptyChart('questionPerformanceChart', 'No question performance returned for the selected filters.'); return; }
   renderChart('questionPerformanceChart', {
     type: 'bar',
     data: { labels: top.map((r) => r.question.slice(0, 80)), datasets: [{ label: 'Avg question score', data: top.map((r) => n(r.avg_question_score)), backgroundColor: 'rgba(239, 68, 68, .66)' }] },
@@ -1179,10 +1168,16 @@ function makeTable(rows) {
   return `<table><thead><tr>${cols.map((c) => `<th>${htmlEscape(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td>${cell(c, r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
 
+function checkedOptionCount(id) {
+  const el = $(id);
+  if (!el) return 0;
+  if (el.tagName === 'SELECT') return Array.from(el.selectedOptions || []).length;
+  return el.querySelectorAll('input[type=checkbox]:checked').length;
+}
 function countSelectedLabel(id, singular, plural = `${singular}s`) {
-  const values = selectedValues(id);
-  if (!values.length) return null;
-  return `${values.length} ${values.length === 1 ? singular : plural}`;
+  const count = checkedOptionCount(id);
+  if (!count) return null;
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 function updateActiveFilterChips() {
   const chipHost = $('activeFilterChips');

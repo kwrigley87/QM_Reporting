@@ -163,8 +163,8 @@ p { line-height: 1.65; }
 .chart-shell { position: relative; min-height: 280px; padding: 16px; border: 1px solid var(--border); border-radius: 20px; background: linear-gradient(180deg, rgba(255,255,255,.76), rgba(248,250,252,.82)); }
 .chart-shell.tall { min-height: 390px; }
 .chart-shell canvas { width: 100% !important; height: 100% !important; min-height: 240px; }
-.trend-shell { min-height: 230px; }
-.trend-shell canvas { min-height: 210px; }
+.trend-shell { min-height: 190px; }
+.trend-shell canvas { min-height: 170px; }
 .chart-empty { display: grid; place-items: center; min-height: 260px; color: var(--muted); font-weight: 800; text-align: center; }
 
 .table-wrap { max-height: 430px; overflow: auto; border: 1px solid var(--border); border-radius: 18px; background: rgba(255, 255, 255, .78); }
