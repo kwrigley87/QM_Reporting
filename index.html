@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Genesys QM Insights</title>
-  <link rel="stylesheet" href="./styles.css?v=0.5.0" />
+  <link rel="stylesheet" href="./styles.css?v=0.4.5" />
 </head>
 <body>
   <div class="app-shell">
@@ -49,8 +49,8 @@
       <section class="hero panel">
         <div class="hero-copy">
           <span class="eyebrow">Live Genesys Cloud quality reporting</span>
-          <h1>QM Reporting Decision Center.</h1>
-          <p>Criteria-first quality reporting with aggregate search summaries, tabbed risk and coaching views, form/question intelligence, Virtual Supervisor governance, and controlled detail exports.</p>
+          <h1>Interactive QM performance cockpit.</h1>
+          <p>Filter-driven evaluation insights with fast aggregate KPIs, trend reporting, form performance, coaching hotspots, AI scoring intelligence, and on-demand question-level export.</p>
           <div id="activeFilterChips" class="filter-chips" aria-live="polite"></div>
         </div>
         <div class="hero-actions">
@@ -60,16 +60,6 @@
           <button id="exportBtn" class="secondary-button">Download detail CSV</button>
         </div>
       </section>
-
-      <section class="scope-panel panel">
-        <div>
-          <span class="eyebrow">Active scope</span>
-          <h2>Choose criteria, then explore the report tabs</h2>
-        </div>
-        <div id="criteriaMessages" class="criteria-messages" aria-live="polite"></div>
-      </section>
-
-      <nav id="reportTabs" class="report-tabs panel" role="tablist" aria-label="Quality reporting views"></nav>
 
       <section class="quick-presets panel" aria-label="Quick date presets">
         <button class="preset-button" data-preset="today">Today</button>
@@ -84,44 +74,61 @@
         <article class="metric accent-blue"><span id="metricEvals">0</span><label>Evaluations</label><small id="metricEvalsSub">Awaiting filters</small></article>
         <article class="metric accent-green"><span id="metricAvg">-</span><label>Total score avg</label><small>Unique evaluation average</small></article>
         <article class="metric accent-purple"><span id="metricCriticalAvg">-</span><label>Total critical score avg</label><small>Critical scoring health</small></article>
-        <article class="metric accent-cyan"><span id="metricSubmissionMix">-</span><label>System-submitted share</label><small>Submission source mix</small></article>
+        <article class="metric accent-cyan"><span id="metricAiAvg">-</span><label>AI evaluation score avg</label><small>System-submitted evals</small></article>
         <article class="metric accent-orange"><span id="metricCritical">0</span><label>Critical failure evaluations</label><small>Unique evaluations</small></article>
         <article class="metric accent-red"><span id="metricQuestionFailures">0</span><label>Failed critical questions</label><small>Question-level detail</small></article>
       </section>
 
-      <section class="tab-panels">
-        <section class="dashboard-grid tab-panel" data-tab-panel="overview">
-          <article class="card wide-card">
-            <div class="section-heading"><div><span class="eyebrow">Quality trend</span><h2>Evaluation volume and scores</h2></div></div>
-            <div class="chart-shell trend-shell"><canvas id="trendScoreChart"></canvas></div>
-            <div id="trendTable" class="table-wrap compact-table"></div>
-          </article>
-          <article class="card"><div class="section-heading"><div><span class="eyebrow">Previous period</span><h2>Movement</h2></div></div><div id="previousPeriodSummary" class="insight-panel"></div></article>
-          <article class="card"><div class="section-heading"><div><span class="eyebrow">Needs attention</span><h2>Priority signals</h2></div></div><div id="needsAttention" class="insight-panel"></div></article>
-        </section>
+      <section class="dashboard-grid">
+        <article class="card wide-card">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Daily momentum</span>
+              <h2>Evaluation volume and scores</h2>
+            </div>
+          </div>
+          <div class="chart-shell trend-shell"><canvas id="trendScoreChart"></canvas></div>
+          <div id="trendTable" class="table-wrap compact-table"></div>
+        </article>
 
-        <section class="dashboard-grid tab-panel hidden" data-tab-panel="risk">
-          <article class="card wide-card"><div class="section-heading"><div><span class="eyebrow">Risk trend</span><h2>Critical failures</h2></div></div><div class="chart-shell"><canvas id="criticalTrendChart"></canvas></div></article>
-          <article class="card wide-card"><div class="section-heading"><div><span class="eyebrow">Critical questions</span><h2>Question performance and failed criticals</h2></div></div><div class="chart-shell tall"><canvas id="questionPerformanceChart"></canvas></div><div id="questionSummary" class="table-wrap"></div></article>
-        </section>
+        <article class="card">
+          <div class="section-heading"><div><span class="eyebrow">Risk trend</span><h2>Critical failures</h2></div></div>
+          <div class="chart-shell"><canvas id="criticalTrendChart"></canvas></div>
+        </article>
 
-        <section class="dashboard-grid tab-panel hidden" data-tab-panel="coaching">
-          <article class="card wide-card"><div class="section-heading"><div><span class="eyebrow">Coaching</span><h2>Agent / work team performance</h2></div></div><div id="agentTeamSummary" class="table-wrap"></div></article>
-        </section>
+        <article class="card">
+          <div class="section-heading"><div><span class="eyebrow">Forms</span><h2>Average and critical score by form</h2></div></div>
+          <div class="chart-shell"><canvas id="formPerformanceChart"></canvas></div>
+          <div id="formSummary" class="table-wrap"></div>
+        </article>
 
-        <section class="dashboard-grid tab-panel hidden" data-tab-panel="forms">
-          <article class="card"><div class="section-heading"><div><span class="eyebrow">Forms</span><h2>Average and critical score by form</h2></div></div><div class="chart-shell"><canvas id="formPerformanceChart"></canvas></div><div id="formSummary" class="table-wrap"></div></article>
-          <article class="card"><div class="section-heading"><div><span class="eyebrow">Groups</span><h2>Question group performance</h2></div></div><div class="chart-shell"><canvas id="groupPerformanceChart"></canvas></div><div id="groupSummary" class="table-wrap"></div></article>
-          <article class="card wide-card"><div class="section-heading"><div><span class="eyebrow">Answers</span><h2>Answer distribution</h2></div></div><div class="chart-shell"><canvas id="answerDistributionChart"></canvas></div><div id="answerSummary" class="table-wrap"></div></article>
-        </section>
+        <article class="card">
+          <div class="section-heading"><div><span class="eyebrow">Groups</span><h2>Group performance</h2></div></div>
+          <div class="chart-shell"><canvas id="groupPerformanceChart"></canvas></div>
+          <div id="groupSummary" class="table-wrap"></div>
+        </article>
 
-        <section class="dashboard-grid tab-panel hidden" data-tab-panel="virtualSupervisor">
-          <article class="card wide-card"><div class="section-heading"><div><span class="eyebrow">Virtual Supervisor</span><h2>Submission source mix</h2></div></div><div class="chart-shell"><canvas id="aiScoringChart"></canvas></div></article>
-        </section>
+        <article class="card">
+          <div class="section-heading"><div><span class="eyebrow">Questions</span><h2>Question performance</h2></div></div>
+          <div class="chart-shell tall"><canvas id="questionPerformanceChart"></canvas></div>
+          <div id="questionSummary" class="table-wrap"></div>
+        </article>
 
-        <section class="dashboard-grid tab-panel hidden" data-tab-panel="detail">
-          <article class="card wide-card"><div class="section-heading"><div><span class="eyebrow">Detail / Export</span><h2>Controlled detail loading</h2></div></div><div class="detail-status"><span>Loaded mode</span><strong id="detailMode">Metadata and filter state only</strong><span>Last refreshed</span><strong id="lastRefreshed">Not refreshed yet</strong></div><p class="note">Full question-level detail is loaded only when you choose Download detail CSV.</p></article>
-        </section>
+        <article class="card">
+          <div class="section-heading"><div><span class="eyebrow">People</span><h2>Agent / work team performance</h2></div></div>
+          <div id="agentTeamSummary" class="table-wrap"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-heading"><div><span class="eyebrow">AI intelligence</span><h2>Human vs AI activity</h2></div></div>
+          <div class="chart-shell"><canvas id="aiScoringChart"></canvas></div>
+        </article>
+
+        <article class="card wide-card">
+          <div class="section-heading"><div><span class="eyebrow">Question intelligence</span><h2>Answer distribution</h2></div></div>
+          <div class="chart-shell"><canvas id="answerDistributionChart"></canvas></div>
+          <div id="answerSummary" class="table-wrap"></div>
+        </article>
       </section>
 
       <section class="status-card panel">
@@ -204,6 +211,6 @@
   </aside>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script type="module" src="./app.js?v=0.5.0"></script>
+  <script src="./app.js?v=0.4.5"></script>
 </body>
 </html>
