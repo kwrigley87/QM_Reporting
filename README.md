@@ -1,35 +1,62 @@
 # Genesys QM Insights Client App
 
-Browser-only starter for a Genesys Cloud Client App that displays question-level QM evaluation results without storing raw evaluation data in a database.
+GitHub Pages-hosted Genesys Cloud Client App for dynamic Quality Management reporting. The app is browser-only, uses Genesys Cloud OAuth PKCE, calls Genesys Cloud APIs directly from the signed-in user's browser, and keeps runtime tokens/report data out of the repository.
 
-## What this includes
+## Current direction
 
-- OAuth Authorization Code + PKCE login flow
-- Live Genesys Cloud API calls
-- Question-level dashboard
-- Browser localStorage cache for user and published-form metadata
-- CSV export from the live dashboard data
-- Evaluation / calibration / human / auto-submitted filters
+The project is moving from a single dashboard page into a **QM Reporting Decision Center** with shared global filters and report tabs:
 
-## Genesys setup
+1. **Overview** — quality health, score trends, previous-period context, and needs-attention signals.
+2. **Risk** — critical failure trends and question risk indicators.
+3. **Coaching** — agent and work-team performance views.
+4. **Forms & Questions** — form, question-group, question, and answer performance.
+5. **Virtual Supervisor** — submission-source governance for human versus system-submitted evaluations.
+6. **Detail / Export** — explicit row-level detail loading and CSV export.
 
-1. Host this folder as a static website. The current production URL is GitHub Pages: `https://kwrigley87.github.io/QM_Reporting/`.
-2. In Genesys Cloud, create an OAuth client using **Authorization Code + PKCE**. Do not use Implicit Grant.
-3. Add the hosted app URL as an authorized redirect URI. It must match exactly, including trailing slash/path: `https://kwrigley87.github.io/QM_Reporting/`.
-4. Copy the OAuth client ID into `OAUTH_CLIENTS` in `app.js` for the matching Genesys Cloud region, for example `usw2.pure.cloud`. The client ID is public metadata, not a client secret.
-5. Assign permissions to the users/roles that will use the app. At minimum, they need access to view analytics evaluations, quality evaluations, published forms, users, and calibration data if using calibration mode.
-6. In Genesys Cloud Admin > Integrations > Web, create a Client Application integration pointing to the hosted URL if you want this opened inside Genesys Cloud.
+## App structure
 
-## Local testing
-
-For the GitHub Pages deployment, no Python server is required. Use:
+The app remains lightweight static hosting, but the code is now split so the reporting model is easier to evolve:
 
 ```text
-https://kwrigley87.github.io/QM_Reporting/
+index.html                 # Static shell and tab containers
+styles.css                 # Visual design, responsive layout, drawer, and tab styling
+app.js                     # OAuth, Genesys API calls, rendering orchestration, and legacy detail export
+src/report-definitions.js  # Report tabs, app version, report request registry
+src/filter-state.js        # Canonical filter defaults, validation, signatures, previous-period helper
+src/request-builders.js    # Endpoint-specific request builders for quality search/detail/fallback paths
+src/cache.js               # In-memory session result cache
+src/ui-shell.js            # Tab rendering and tab switching helpers
 ```
 
-For optional local testing, run any local static server, then open `http://localhost:5173/` and add that exact URL to the OAuth client's redirect URIs.
+## Data strategy
 
-## Notes
+- `POST /api/v2/quality/evaluations/search` is the primary dashboard data path.
+- Selected names in the UI are resolved to IDs before querying Genesys Cloud.
+- Search filters use supported `EXACT` criteria with multiple selected IDs passed as `values`, so values within one criterion are OR'd and separate criteria are AND'd.
+- Date range validation is centralized and enforces the quality search API's 3-month maximum.
+- Evaluation-level measures are calculated from unique evaluation summaries so question rows do not inflate KPIs.
+- Full question-level detail remains on-demand only, primarily for CSV export.
 
-This is phase 1/2 only. It does not include a backend, scheduled jobs, alerts, or anomaly detection. It caches only metadata such as user display names and published form definitions in the browser to reduce repeated API calls.
+## Browser-only security model
+
+There is no backend database in this phase. Allowed persistence is limited to:
+
+- OAuth token storage in the signed-in browser session/local browser storage required by the static client flow.
+- Non-sensitive preferences and metadata cache in browser storage.
+- In-memory result cache for repeated filter/report combinations.
+
+Do not commit OAuth tokens, exported CSV files, customer evaluation data, or screenshots containing customer data.
+
+## Deploying to GitHub Pages
+
+Update these files directly on the repository `main` branch and let GitHub Pages serve them from the configured Pages source:
+
+```text
+index.html
+styles.css
+app.js
+src/*.js
+README.md
+```
+
+No GitHub Actions workflow is required for this direct-static-pages setup.
