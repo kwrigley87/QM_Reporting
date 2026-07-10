@@ -1,3 +1,9 @@
+import { APP_VERSION, AGGREGATE_REQUESTS } from './src/report-definitions.js';
+import { normalizeFilters, validateReportCriteria, createFilterSignature, previousPeriod } from './src/filter-state.js';
+import { buildQualitySearchRequest as buildQualitySearchPayload } from './src/request-builders.js';
+import { SessionResultCache } from './src/cache.js';
+import { renderTabs, wireTabs, setActiveTab } from './src/ui-shell.js';
+
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
 
@@ -30,6 +36,8 @@ let state = {
   cache: loadCache(),
   runTimer: null,
   metadataLoaded: false,
+  activeTab: 'overview',
+  resultCache: new SessionResultCache(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -115,12 +123,11 @@ function resetFilters() {
   debouncedRun();
 }
 function getConfigFromUi() {
-  return {
-    region: state.region || $('loginRegion').value || DEFAULT_REGION,
+  const filters = normalizeFilters({
     startDate: $('startDate').value,
     endDate: $('endDate').value,
-    sourceFilter: $('sourceFilter').value,
-    recordFilter: $('recordFilter').value,
+    submissionSource: $('sourceFilter').value,
+    recordType: $('recordFilter').value,
     formIds: selectedValues('formFilter'),
     agentIds: selectedValues('agentFilter'),
     divisionIds: selectedValues('divisionFilter'),
@@ -861,8 +868,11 @@ function debouncedRun() {
 }
 async function runDashboard() {
   const cfg = getConfigFromUi();
-  if (!state.token?.access_token) { alert('Sign in first.'); return; }
-  if (!cfg.startDate || !cfg.endDate) { alert('Select a date range.'); return; }
+  if (!state.token?.access_token) { setStatus('Sign in first.', 'warning'); return; }
+  const criteriaMessages = validateReportCriteria(cfg);
+  renderCriteriaMessages(criteriaMessages);
+  const blocking = criteriaMessages.filter((item) => item.level === 'error');
+  if (blocking.length) { setStatus(blocking.map((item) => item.message).join(' '), 'warning'); return; }
   saveConfig();
   setBusy(true);
   try {
@@ -886,8 +896,8 @@ async function runDashboard() {
     setStatus(`Dashboard refreshed. ${uniqueEvalSummaries().length} unique evaluations loaded. ${detailText}`);
   } catch (err) {
     console.error(err);
-    setStatus(`Error: ${err.message}`);
-    alert(err.message);
+    setStatus(`Error: ${err.message}`, 'error');
+    renderCriteriaMessages([{ level: 'error', message: err.message }]);
   } finally {
     setBusy(false);
   }
@@ -963,12 +973,14 @@ function scoreBadge(value) {
   return cls ? `<span class="score-badge ${cls}">${text}</span>` : text;
 }
 function render() {
+  renderCriteriaMessages(validateReportCriteria(getConfigFromUi()));
   const evals = uniqueEvalSummaries();
   $('metricEvals').textContent = evals.length;
   $('metricEvalsSub').textContent = state.detailLoaded ? `${state.rows.length} question rows loaded` : 'Fast aggregate view';
   $('metricAvg').textContent = fmt(avg(evals.map((e) => e.total_score)), 1);
   $('metricCriticalAvg').textContent = fmt(avg(evals.map((e) => e.total_critical_score)), 1);
-  $('metricAiAvg').textContent = fmt(avg(evals.filter((e) => e.system_submitted).map((e) => e.ai_score)), 1);
+  const systemSubmitted = evals.filter((e) => e.system_submitted).length;
+  $('metricSubmissionMix').textContent = evals.length ? `${Math.round((systemSubmitted / evals.length) * 100)}%` : '-';
   $('metricCritical').textContent = evals.filter((e) => e.critical_failure).length;
   $('metricQuestionFailures').textContent = state.rows.filter((r) => r.failed_kill_question === true || (r.question_is_critical === true && n(r.question_score) === 0)).length;
   const trendRows = renderTrend(evals);
@@ -1261,6 +1273,9 @@ async function exportCsv() {
 }
 async function init() {
   hydrateUi();
+  renderTabs($('reportTabs'));
+  wireTabs((tab) => { state.activeTab = tab; setTimeout(render, 0); });
+  setActiveTab(state.activeTab);
   $('loginBtn').addEventListener('click', startLogin);
   $('continueLoginBtn').addEventListener('click', continueLogin);
   $('logoutBtn').addEventListener('click', logout);
