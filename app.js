@@ -6,6 +6,8 @@ import { renderTabs, wireTabs, setActiveTab } from './src/ui-shell.js';
 
 // Genesys QM Insights - Authorization Code + PKCE, browser-only dashboard.
 // Replace the clientId values below with PKCE OAuth clients created in the matching Genesys Cloud region.
+
+const APP_VERSION = '0.4.5';
 const CONFIG_KEY = 'qmInsights.config.v2';
 const CACHE_KEY = 'qmInsights.cache.v2';
 const TOKEN_KEY = 'qmInsights.token.v2';
@@ -51,12 +53,7 @@ function selectedValues(id) {
   return [...new Set(values)].filter(Boolean);
 }
 
-function setStatus(message, level = 'info') {
-  const el = $('status');
-  if (!el) return;
-  el.textContent = message;
-  el.className = `status status-${level}`;
-}
+function setStatus(message) { $('status').textContent = message; }
 function setBusy(isBusy) {
   ['exportBtn', 'resetFiltersBtn'].forEach((id) => { if ($(id)) $(id).disabled = isBusy; });
 }
@@ -134,15 +131,8 @@ function getConfigFromUi() {
     formIds: selectedValues('formFilter'),
     agentIds: selectedValues('agentFilter'),
     divisionIds: selectedValues('divisionFilter'),
-    workTeamIds: selectedValues('teamFilter'),
+    teamIds: selectedValues('teamFilter'),
     queueIds: selectedValues('queueFilter'),
-  });
-  return {
-    region: state.region || $('loginRegion').value || DEFAULT_REGION,
-    ...filters,
-    sourceFilter: filters.submissionSource,
-    recordFilter: filters.recordType,
-    teamIds: filters.workTeamIds,
   };
 }
 function hydrateUi() {
@@ -712,8 +702,26 @@ async function fetchEvaluationDetail(conversationId, evaluationId) {
 }
 
 function buildQualitySearchRequest(recordType, cfg, pageNumber = 1, pageSize = 100) {
-  const filters = normalizeFilters({ ...cfg, recordType, submissionSource: cfg.sourceFilter, workTeamIds: cfg.teamIds });
-  return buildQualitySearchPayload(filters, AGGREGATE_REQUESTS.healthSummary, { pageNumber, pageSize });
+  const query = [
+    { type: 'DATE_RANGE', field: 'submittedDate', startValue: `${cfg.startDate}T00:00:00.000Z`, endValue: `${cfg.endDate}T23:59:59.999Z`, operator: 'AND' },
+  ];
+  const addExactValues = (field, values) => {
+    const uniqueValues = [...new Set(values || [])].filter(Boolean);
+    if (uniqueValues.length) query.push({ type: 'EXACT', field, values: uniqueValues, operator: 'AND' });
+  };
+  addExactValues('formId', cfg.formIds);
+  addExactValues('agentId', cfg.agentIds);
+  addExactValues('queueId', cfg.queueIds);
+  addExactValues('divisionId', cfg.divisionIds);
+  addExactValues('teamId', cfg.teamIds);
+  if (cfg.sourceFilter === 'human') query.push({ type: 'EXACT', field: 'systemSubmitted', value: false, operator: 'AND' });
+  if (cfg.sourceFilter === 'auto') query.push({ type: 'EXACT', field: 'systemSubmitted', value: true, operator: 'AND' });
+  return {
+    pageNumber,
+    pageSize,
+    query,
+    sort: [{ field: 'submittedDate', order: 'desc' }],
+  };
 }
 function unwrapSearchEntities(data) {
   const roots = [data.results, data.entities, data.evaluations, data.items, data.documents, data.hits, data.searchResults].filter(Array.isArray);
@@ -790,9 +798,6 @@ function normalizeSearchEvaluation(item, recordType) {
 }
 async function fetchQualitySearchSummaries(recordType) {
   const cfg = getConfigFromUi();
-  const cacheKey = createFilterSignature({ region: state.region, reportId: `${recordType}:dashboard`, requestType: 'qualitySearch', filters: normalizeFilters({ ...cfg, recordType, submissionSource: cfg.sourceFilter, workTeamIds: cfg.teamIds }) });
-  const cached = state.resultCache.get(cacheKey);
-  if (cached) return cached;
   const first = await gcFetch('POST', '/api/v2/quality/evaluations/search', buildQualitySearchRequest(recordType, cfg, 1, 100));
   const pageCount = Math.min(first.pageCount || Math.ceil((first.total || 0) / 100) || 1, 50);
   const pages = [first];
@@ -823,7 +828,7 @@ async function fetchQualitySearchSummaries(recordType) {
     .filter(Boolean);
   if (!summaries.length && !searchRows.length && !first.total) throw new Error('No dashboard records were returned for the selected filters.');
   state.aggregateSearchResults = first;
-  return state.resultCache.set(cacheKey, { rows: [], evals: [], summaries, searchRows, search: first });
+  return { rows: [], evals: [], summaries, searchRows, search: first };
 }
 async function fetchRecordTypeDashboard(recordType) {
   setStatus(`Refreshing ${recordType} dashboard metrics...`);
@@ -990,38 +995,6 @@ function render() {
   renderQuestionChart(questionRows);
   renderAnswerChart(answerRows);
   renderAiChart(evals);
-  renderDecisionCenterInsights(evals, trendRows, formRows, groupRows, questionRows);
-}
-
-function renderCriteriaMessages(messages = []) {
-  const host = $('criteriaMessages');
-  if (!host) return;
-  host.innerHTML = messages.map((item) => `<div class="criteria-message ${htmlEscape(item.level)}">${htmlEscape(item.message)}</div>`).join('');
-}
-
-function renderDelta(current, previous, suffix = '') {
-  const c = n(current), p = n(previous);
-  if (c === null || p === null) return '-';
-  const delta = c - p;
-  const sign = delta > 0 ? '+' : '';
-  return `${sign}${fmt(delta, Math.abs(delta) < 10 ? 1 : 0)}${suffix}`;
-}
-
-function renderDecisionCenterInsights(evals, trendRows, formRows, groupRows, questionRows) {
-  const attention = [];
-  const cfg = getConfigFromUi();
-  const minCount = 5;
-  const riskyForm = formRows.filter((r) => Number(r.evaluations) >= minCount).sort((a, b) => Number(a.avg_total_score) - Number(b.avg_total_score))[0];
-  if (riskyForm) attention.push(`${riskyForm.form} is the lowest scoring form at ${riskyForm.avg_total_score}% across ${riskyForm.evaluations} evaluations.`);
-  const failedTrend = trendRows.slice().sort((a, b) => Number(b.critical_failure_evals) - Number(a.critical_failure_evals))[0];
-  if (failedTrend?.critical_failure_evals) attention.push(`${failedTrend.date} has the highest critical failure volume with ${failedTrend.critical_failure_evals} failed evaluations.`);
-  const riskyGroup = groupRows.filter((r) => Number(r.evaluations) >= minCount).sort((a, b) => Number(a.avg_group_score) - Number(b.avg_group_score))[0];
-  if (riskyGroup) attention.push(`${riskyGroup.group} is the lowest group performance signal at ${riskyGroup.avg_group_score}% across ${riskyGroup.evaluations} evaluations.`);
-  $('needsAttention').innerHTML = attention.length ? `<ul>${attention.map((x) => `<li>${htmlEscape(x)}</li>`).join('')}</ul>` : '<p class="note">Needs-attention insights appear after aggregate results are loaded.</p>';
-  $('detailMode').textContent = state.detailLoaded ? 'Detail rows loaded' : (evals.length ? 'Aggregate/search summaries loaded' : 'Metadata and filter state only');
-  $('lastRefreshed').textContent = evals.length ? new Date().toLocaleString() : 'Not refreshed yet';
-  const prev = previousPeriod(cfg);
-  $('previousPeriodSummary').innerHTML = prev ? `<div class="delta-grid"><span>Previous window</span><strong>${htmlEscape(prev.startDate)} → ${htmlEscape(prev.endDate)}</strong><span>Current evaluations</span><strong>${evals.length}</strong><span>Current average score</span><strong>${fmt(avg(evals.map((e) => e.total_score)), 1)}%</strong></div>` : '<p class="note">Select a valid date range to calculate the comparison window.</p>';
 }
 function renderTrend(evals) {
   const map = new Map();
@@ -1188,7 +1161,7 @@ function renderAiChart(evals) {
   const accepted = aiRows.filter((r) => r.ai_answer_matches_final === 'true').length;
   const labels = (accepted || overrides) ? ['AI accepted', 'AI overridden'] : ['Human submitted', 'System submitted'];
   const values = (accepted || overrides) ? [accepted, overrides] : [human, automated];
-  if (!evals.length && !values.some(Boolean)) { renderEmptyChart('aiScoringChart', 'Submission source mix appears after refresh.'); return; }
+  if (!evals.length && !values.some(Boolean)) { renderEmptyChart('aiScoringChart', 'AI and human evaluation mix appears after refresh.'); return; }
   renderChart('aiScoringChart', {
     type: 'doughnut',
     data: { labels, datasets: [{ data: values, backgroundColor: ['#06b6d4', '#8b5cf6', '#f97316'] }] },

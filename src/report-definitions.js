@@ -1,4 +1,4 @@
-export const APP_VERSION = '0.5.1';
+export const APP_VERSION = '0.5.0';
 
 export const REPORT_TABS = [
   { id: 'overview', label: 'Overview', description: 'Quality health, trends, previous-period movement, and attention signals.' },

@@ -140,6 +140,48 @@ p { line-height: 1.65; }
 .filter-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 999px; color: #334155; background: rgba(255, 255, 255, .76); border: 1px solid var(--border); font-weight: 700; font-size: 12px; }
 .quick-presets { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; padding: 14px; border-radius: 22px; }
+.report-tabs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 10px;
+  border-radius: 22px;
+}
+.tab-button {
+  display: grid;
+  gap: 4px;
+  min-height: 74px;
+  padding: 12px;
+  color: #334155;
+  background: rgba(255, 255, 255, .82);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-weight: 900;
+  text-align: left;
+}
+.tab-button small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.tab-button.active {
+  color: #fff;
+  background: linear-gradient(135deg, #4338ca, #0891b2);
+  box-shadow: 0 12px 28px rgba(67, 56, 202, .22);
+}
+.tab-button.active small { color: rgba(255, 255, 255, .78); }
+.criteria-messages { display: grid; gap: 8px; margin-top: 14px; }
+.criteria-message {
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 800;
+}
+.criteria-message.error { color: #991b1b; background: #fee2e2; }
+.criteria-message.warning { color: #92400e; background: #fef3c7; }
+.criteria-message.info { color: #075985; background: #e0f2fe; }
 
 .metrics { display: grid; gap: 16px; margin: 22px 0; }
 .metrics-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
@@ -217,6 +259,7 @@ select[multiple] { min-height: 138px; padding: 8px; }
   .hero-actions { flex-wrap: wrap; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .status-card { grid-template-columns: 1fr; }
+  .report-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
   .topbar { align-items: flex-start; flex-direction: column; }
@@ -227,6 +270,7 @@ select[multiple] { min-height: 138px; padding: 8px; }
   .hero-actions button { width: 100%; }
   .hero-actions { width: 100%; }
   .popover { left: 0; right: auto; }
+  .report-tabs { grid-template-columns: 1fr; }
 }
 
 /* Interactive filter drawer refinements */
@@ -237,7 +281,7 @@ body.filters-open .app-shell { margin-right: min(420px, 32vw); }
 .drawer-header { position: sticky; top: 0; z-index: 2; background: rgba(255,255,255,.98); }
 .multi-filter { position: relative; }
 .multi-filter-button { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 11px 12px; color: var(--text); background: #fff; border: 1px solid var(--border); border-radius: 14px; font-weight: 700; text-align: left; }
-.multi-filter-button::after { content: "⌄"; color: var(--muted); font-size: 16px; }
+.multi-filter-button::after { content: "âŒ„"; color: var(--muted); font-size: 16px; }
 .multi-filter-menu { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 90; max-height: 300px; overflow: auto; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 18px 42px rgba(15,23,42,.18); }
 .multi-filter-search { margin-bottom: 10px; font-size: 12px; color: var(--muted); }
 .multi-filter-search input { margin-top: 6px; padding: 9px 10px; }
@@ -249,87 +293,3 @@ body.filters-open .app-shell { margin-right: min(420px, 32vw); }
 @media (max-width: 980px) { body.filters-open .app-shell { margin-right: 0; } .drawer-backdrop { display: block !important; } }
 .drawer-header-actions { display: flex; align-items: center; gap: 10px; }
 .filter-drawer { grid-template-rows: auto 1fr; }
-
-/* Decision Center tabbed shell */
-.scope-panel {
-  display: grid;
-  grid-template-columns: minmax(220px, 340px) 1fr;
-  gap: 18px;
-  align-items: start;
-  margin-top: 18px;
-  padding: 18px;
-  border-radius: 22px;
-}
-.criteria-messages { display: grid; gap: 8px; }
-.criteria-message {
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,.82);
-  color: #334155;
-  font-weight: 750;
-}
-.criteria-message.warning { color: #92400e; background: #fef3c7; border-color: #fde68a; }
-.criteria-message.error { color: #991b1b; background: #fee2e2; border-color: #fecaca; }
-.report-tabs {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 18px;
-  padding: 12px;
-  border-radius: 22px;
-}
-.tab-button {
-  display: grid;
-  gap: 5px;
-  min-height: 74px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  color: #334155;
-  background: rgba(255,255,255,.76);
-  text-align: left;
-  font-weight: 900;
-}
-.tab-button small {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.3;
-  font-weight: 700;
-}
-.tab-button.active {
-  color: #fff;
-  background: linear-gradient(135deg, #312e81, #0891b2);
-  border-color: transparent;
-  box-shadow: 0 16px 34px rgba(49, 46, 129, .22);
-}
-.tab-button.active small { color: rgba(255,255,255,.82); }
-.tab-panels { margin-top: 18px; }
-.tab-panel.hidden { display: none !important; }
-.insight-panel {
-  min-height: 260px;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: rgba(255,255,255,.78);
-}
-.insight-panel ul { margin: 0; padding-left: 18px; display: grid; gap: 10px; }
-.insight-panel li { line-height: 1.5; color: #334155; font-weight: 750; }
-.delta-grid, .detail-status {
-  display: grid;
-  grid-template-columns: minmax(140px, .5fr) 1fr;
-  gap: 10px 14px;
-  align-items: center;
-}
-.delta-grid span, .detail-status span { color: var(--muted); font-weight: 800; }
-.delta-grid strong, .detail-status strong { color: var(--text); font-size: 16px; }
-.status-error { color: #991b1b; }
-.status-warning { color: #92400e; }
-.status-info { color: var(--muted); }
-
-@media (max-width: 1220px) { .report-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 760px) {
-  .scope-panel { grid-template-columns: 1fr; }
-  .report-tabs { grid-template-columns: 1fr; }
-  .tab-button { min-height: auto; }
-}
